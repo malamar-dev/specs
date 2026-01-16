@@ -184,6 +184,8 @@ Each comment has the following fields:
 
 **Note:** Currently there is only one user with no auth, so a single mock user ID (`000000000000000000000`) is used everywhere. Multiple users will be supported later.
 
+**Deleted Agent Handling:** If a comment was made by an agent that has since been deleted, display "(Deleted Agent)" as the author name. The `agent_id` is kept for reference, but the display gracefully handles missing agents.
+
 ### Task Router/Runner
 
 Task router takes the responsibility to bind the task with the agent.
@@ -197,25 +199,62 @@ A task event is emitted when:
 
 #### Task Event Queue
 
-Each task has an event queue to manage processing:
+Each task has an event queue to manage processing.
+
+**Queue Item States:**
+- `queued`: Waiting to be picked up
+- `in_progress`: Currently being processed
+- `completed`: Finished successfully
+- `failed`: Processing failed
+
+**Queue Item Fields:**
+- `is_priority: boolean` - When true, this item is picked up first (see Priority Override)
+- `updated_at: Date` - Used for LIFO ordering
+
+**Queue Behavior:**
 1. Whenever a new task event is emitted, if the queue for that task is empty, a new item is added with status "queued"
 2. When the runner picks up a queue item, its status changes to "in_progress"
 3. If a new task event is emitted while a queue item is "in_progress", a new item is added with status "queued"
-4. If a new task event is emitted while there's already both an "in_progress" and a "queued" item for that task, no new queue item is added
+4. If a new task event is emitted while there's already both an "in_progress" and a "queued" item for that task, no new queue item is added - but the existing "queued" item's `updated_at` is refreshed to bump its priority
+5. Completed and failed items are kept (for pickup priority logic) and cleaned up by the Queue Cleanup job after 7 days
 
 #### Queue Pickup Priority
 
-The runner does **not** use FIFO ordering. Instead, it prioritizes the task that was most recently processed. This ensures the runner "sticks with" a task until it moves to "In Review" before picking up other tasks.
+The runner picks up queue items in the following order (per workspace):
 
-**Rationale**: Tackle one task until completion, rather than starting many tasks but finishing none.
+1. **Priority flag first**: Any queue item with `is_priority: true` and status `queued`
+2. **Most recently processed task**: Find the task that most recently has a `completed` or `failed` queue item, then pick its `queued` item
+3. **LIFO fallback**: If no recent history, pick the most recently updated `queued` item (by `updated_at`)
+
+**Rationale**: Tackle one task until completion, rather than starting many tasks but finishing none. LIFO ordering allows users to "bump" a task by commenting on it (which updates the queue item's `updated_at`).
+
+#### Priority Override
+
+Users can manually prioritize a task for the next loop via a button in the UI:
+
+1. Find or create a queue item for that task
+2. Set `is_priority: true` on that queue item
+3. Set `is_priority: false` on all other queue items in that workspace
+4. The runner will pick up this task next
+
+Only one task can be prioritized at a time per workspace. After processing, the runner returns to normal pickup behavior.
 
 #### Status Transitions
 
-When a task event is picked up:
+**Runner-triggered transitions** (when a task event is picked up):
 1. If the task is in "Todo", move it to "In Progress"
 2. If the task is in "In Progress" but all agents skip (no comments added), move it to "In Review" automatically
 3. If the task is in "In Review" but there is a new comment from the user, move it back to "In Progress" and retrigger the loop
 4. If the task is in "Done", do nothing
+
+**User-triggered transitions:**
+- User can move a task from "Done" back to "Todo" or "In Progress" (after commenting or editing the task)
+- User can move a task to "Done" (only humans can mark tasks as done)
+- No restrictions on user-initiated status changes
+
+**Auto-demotion:**
+- When the runner picks a task for a new loop, all OTHER "In Progress" tasks in that workspace are automatically moved to "Todo"
+- This ensures only one task shows as "In Progress" at a time per workspace
 
 #### The Loop
 
@@ -230,6 +269,28 @@ This is the core concept of Malamar:
    - If all agents chose "skip" and no new comments were added, the loop ends and the task moves to "In Review"
 6. When retriggered, the loop always starts from the first agent in the workspace order.
 
+#### Agent Execution Order
+
+The runner uses a **just-in-time snapshot** approach for agent execution:
+
+1. Before executing each agent, the runner queries for the next agent by finding the agent with the smallest `order` value greater than the current agent's `order`.
+2. Agent data (instruction, name, assigned CLI) is fetched right before execution, not at the start of the loop.
+3. This means changes to agents take effect immediately for subsequent agents in the current loop.
+
+**Implications:**
+- If an agent is deleted mid-loop, it's simply not found and skipped.
+- If a new agent is inserted with an `order` between the current and next agent, it will be picked up.
+- Changes to an agent's instruction don't affect an already-running execution.
+
+#### Concurrent Processing
+
+The runner uses a single process with concurrent workers per workspace:
+
+1. Each workspace has its own worker that handles queue pickup and agent loops.
+2. Multiple workspaces can process tasks simultaneously.
+3. Within a workspace, only one task is processed at a time.
+4. There is no artificial limit on concurrent workspace workers.
+
 #### Agents on "In Review" Tasks
 
 Agents are NOT allowed to run on tasks that are already in "In Review". If a queue item is picked up but the task is in "In Review", no agents will execute.
@@ -243,12 +304,19 @@ If an agent both comments AND requests "In Review" in the same response:
 
 #### Error Handling
 
-If an agent fails or times out:
-1. The runner writes a System comment with detailed error/timeout information (free text format)
-2. A new task event is emitted into the queue
-3. The current loop stops
+The following errors are handled uniformly:
+- **CLI execution failure**: Process crashes or returns non-zero exit code
+- **CLI timeout**: Process takes too long (handled by OS)
+- **Malformed output**: Output file is empty, missing, contains invalid JSON, or doesn't match the expected schema
+
+When any of these errors occur:
+1. The runner writes a System comment with detailed error information (e.g., "Output file was empty", "Invalid JSON: unexpected token at position 42", "CLI exited with code 1")
+2. The current loop stops immediately
+3. The System comment emits a task event, which adds a new queue item
 4. The task does NOT move to "In Review" - a new loop will be triggered through the queue (contextual retry)
 5. There is no explicit retry backoff; the task event queue provides natural delay
+
+This allows agents to see the error in subsequent loops and potentially self-correct.
 
 #### Iteration Limits
 
@@ -263,18 +331,47 @@ Malamar supports multiple AI CLI tools through an adapter pattern. Each supporte
 
 ### Supported CLIs
 
-1. Claude Code
-2. Gemini CLI
-3. OpenAI Codex CLI
-4. OpenCode
+| CLI | Binary Name |
+|-----|-------------|
+| Claude Code | `claude` |
+| Gemini CLI | `gemini` |
+| OpenAI Codex CLI | `codex` |
+| OpenCode | `opencode` |
 
 ### Auto-Detection
 
-On startup, Malamar automatically searches for available CLIs from the supported list and shows them to the user. Only detected CLIs can be assigned to agents.
+On startup and periodically (every 5 minutes), Malamar automatically detects available CLIs:
+
+1. Search for the binary in PATH (or use custom path from settings)
+2. Run a simple test prompt (e.g., "Respond with OK")
+3. Verify the process exits successfully with non-empty output
+4. Store the detected version in memory
+
+This ensures the CLI is both installed AND properly configured (e.g., API keys set).
+
+### CLI Settings
+
+Each CLI has a settings section in the CLI Settings page:
+
+| Field | Description |
+|-------|-------------|
+| Binary Path | Custom path override (empty = use PATH) |
+| Environment Variables | Key-value pairs to inject when running the CLI |
+| Detected Version | Read-only, shows auto-detected version |
+| Status | Read-only: "Available", "Not Found", or "Test Failed" |
+
+### CLI Unavailability Warnings
+
+When an assigned CLI becomes unavailable, warnings are displayed on:
+- Workspace detail page
+- Create task form
+- Task detail page
+
+This gives users visibility before they create or run tasks.
 
 ### CLI Invocation
 
-Each CLI is invoked via direct shell command. For example:
+Each CLI is invoked via direct shell command with the configured environment variables. For example:
 
 ```shell
 claude --dangerously-skip-permissions --json-schema ... --output-format json --prompt ...
@@ -287,7 +384,7 @@ The runner waits for the subprocess to exit before proceeding.
 - CLIs that support JSON schema flags (e.g., Claude Code) use native schema enforcement for the agent response format.
 - CLIs without schema support have the response format instruction embedded in the prompt.
 
-### CLI Unavailability
+### CLI Unavailability at Runtime
 
 Agent assignment to a CLI is allowed even if the CLI isn't currently available. At runtime, if an assigned CLI isn't available, the runner treats it as an error:
 1. System comment is added to the task with error details.
@@ -307,6 +404,50 @@ The runner creates an input file at `/tmp/malamar_task_{task_id}.md` (overwritte
 4. **Output Instruction**: Instruction to write the result to a pre-created output file.
 
 The CLI is invoked with an instruction like: "Read the file at $FILE_PATH and follow the instruction autonomously."
+
+#### Input File Format
+
+```markdown
+# Malamar Context
+You are being orchestrated by Malamar, a multi-agent workflow system.
+{workspace instruction here}
+
+# Your Role
+{agent instruction here}
+
+## Other Agents in This Workflow
+- Planner
+- Implementer
+- Reviewer
+- Approver
+
+# Task
+## Summary
+{task summary}
+
+## Description
+{task description}
+
+## Comments
+
+​```json
+{"author": "Planner", "agent_id": "abc123xyz", "content": "## My Plan\n\n1. First step\n2. Second step", "created_at": "2025-01-17T10:00:00Z"}
+{"author": "User", "user_id": "000000000000000000000", "content": "Looks good, proceed!", "created_at": "2025-01-17T10:05:00Z"}
+{"author": "System", "content": "Error: CLI timeout after 30s", "created_at": "2025-01-17T10:10:00Z"}
+​```
+
+# Output Instruction
+Write your response as JSON to: /tmp/malamar_output_{random_nanoid}.json
+```
+
+**Comment Format Notes:**
+- Comments are in JSONL format (one JSON object per line) inside a code block.
+- This prevents markdown content in comments from breaking the file structure.
+- The `author` field values:
+  - Agent comments: the agent's name at the time the comment was created
+  - System comments: "System"
+  - User comments: "User"
+- The "Other Agents" list reflects agents at the moment of input file creation.
 
 ### Output File
 
@@ -328,11 +469,36 @@ Two mechanisms for keeping the UI in sync:
 
 1. **Task-Level Polling**: The web UI polls every 3 seconds (using React Query or similar) to gather new task data. This approach works well when the user is actively viewing or commenting on a task.
 
-2. **Global SSE Endpoint**: The web UI connects to a Server-Sent Events endpoint for real-time notifications/toasts when events happen in the backend (e.g., new comment, status change, error occurred). The backend uses an in-process pub/sub event emitter to fan out events.
+2. **Global SSE Endpoint**: The web UI connects to a Server-Sent Events endpoint for real-time notifications/toasts when events happen in the backend. The backend uses an in-process pub/sub event emitter to fan out events.
+
+#### SSE Events
+
+| Event | Payload |
+|-------|---------|
+| `task.status_changed` | task_id, task_summary, old_status, new_status, workspace_id |
+| `task.comment_added` | task_id, task_summary, author_name, workspace_id |
+| `task.error_occurred` | task_id, task_summary, error_message, workspace_id |
+| `agent.execution_started` | task_id, task_summary, agent_name, workspace_id |
+| `agent.execution_finished` | task_id, task_summary, agent_name, workspace_id |
+
+Payloads are self-contained for toast display - no refetch needed for the notification itself.
 
 ## Notifications
 
 Malamar can send email notifications via Mailgun API when certain events occur.
+
+### Mailgun Configuration
+
+Global settings in the Settings page:
+
+| Field | Description |
+|-------|-------------|
+| API Key | Mailgun API key |
+| Domain | Mailgun domain |
+| From Email | Sender email address |
+| To Email | Recipient email address |
+
+A "Send Test Email" button allows users to verify the configuration works.
 
 ### Configurable Events
 
@@ -343,7 +509,11 @@ Users can enable/disable notifications per event type in the settings page:
 
 ### Settings Scope
 
-Notification settings are global with per-workspace overrides. Global settings apply to all workspaces unless a workspace explicitly overrides them.
+Notification settings are global with per-workspace overrides:
+- **Global**: Mailgun configuration (API key, domain, from/to email) applies to all workspaces
+- **Per-workspace**: Toggle events on/off (inherits global email config)
+
+Workspace settings only control which events trigger notifications, not the email configuration itself.
 
 ## User Actions
 
@@ -351,9 +521,56 @@ Notification settings are global with per-workspace overrides. Global settings a
 
 Users can manually kill the current loop of a task if it's stuck or taking too long. When a loop is killed:
 
-1. A system comment is added to the task noting that the user canceled the loop.
-2. The task moves to "In Review" so the user can investigate the problem.
-3. The user can move the task back to "In Progress" when ready to retry.
+1. Send SIGTERM to the running CLI subprocess.
+2. Leave the output file as-is (no cleanup).
+3. A system comment is added to the task noting that the user canceled the loop.
+4. The task moves to "In Review" so the user can investigate the problem.
+5. The user can move the task back to "In Progress" when ready to retry.
+
+### Delete Workspace
+
+Users can delete a workspace entirely. This is a destructive operation:
+
+1. User must type the workspace name to confirm.
+2. If a loop is running, send SIGTERM to the CLI subprocess.
+3. Cascade delete all related data: agents, tasks, comments, queue items.
+
+### Delete Task
+
+Users can delete a task. This follows the same pattern as workspace deletion:
+
+1. User must confirm the deletion.
+2. If the task has an active loop, send SIGTERM to the CLI subprocess.
+3. Delete the task and all its comments and queue items.
+
+## Background Jobs
+
+Malamar runs several background jobs:
+
+### Runner
+
+The main job that processes tasks:
+- Runs as a continuous loop with 1 second sleep between checks.
+- Spawns concurrent workers per workspace (see Concurrent Processing).
+- Picks up queue items based on priority order.
+
+### Queue Cleanup
+
+Cleans up old queue items to prevent table overflow:
+- Runs on a cron schedule (e.g., daily).
+- Deletes `completed` and `failed` queue items older than 7 days.
+- Leaves `queued` and `in_progress` items untouched.
+
+### CLI Health Check
+
+Periodically verifies CLI availability:
+- Runs every 5 minutes.
+- Updates in-memory CLI status.
+- UI polls a health endpoint to get current status (no SSE push for CLI changes).
+
+### Email Notifications
+
+Email notifications are sent via fire-and-forget async calls when events occur. This is not a separate background job - notifications are triggered inline but don't block the runner.
 
 ## Technical Decisions
 
