@@ -4,6 +4,22 @@ Malamar is a personal project of Irving Dinh (me), it is designed to solve my pr
 1. I've Claude Code, Gemini CLI and also Codex CLI.
 2. I want them working with each other, to checking other works, back to back. When everything is done, it will move to the in review and wait for my touching.
 
+## Application Architecture
+
+Malamar is a self-contained, Pocketbase-like application:
+
+1. **Distribution**: Single executable binary, or run via `bunx`/`npx`. Can be installed with Homebrew.
+2. **Runtime**: Runs as a background service with a single command (e.g., `./malamar`).
+3. **Data Storage**: Uses `~/.malamar` directory to store the SQLite database, files, and configuration.
+4. **Web Interface**: Exposes a web UI on port `3456` for managing workspaces, agents, tasks, and settings.
+5. **Remote Access**: Can be accessed remotely via Tailscale for mobile access when away from keyboard.
+6. **Dependencies**: Zero external dependencies. Everything is self-contained (no Redis, no external database).
+7. **Authentication**: No authentication for now. The application is meant to run locally or behind Tailscale.
+
+### Startup and Recovery
+
+When Malamar starts, all items in the task event queue are automatically picked up and resumed. No manual intervention is needed for tasks that were "In Progress" from a previous run.
+
 ## Entities
 
 ### Workspace
@@ -16,6 +32,26 @@ Workspace is the roof of everything in Malamar.
     2.3. Reviewer is the AI agent to double check the work of the implementer.
     2.4. Approver checking if the work is good enough, anything else to clarify before requesting for my attention.
 3. Workspace has multiple tasks, each task has the summary (title) and the description. I will be the one who create the task, then the AI agents will working with each other fully autonomous to complete the task.
+4. Workspace has a working directory setting that determines where agents execute their work.
+
+#### Working Directory
+
+The working directory is configured per workspace. Two scenarios:
+
+**Scenario 1: Static Working Directory**
+- User has a pre-configured directory (e.g., a cloned repository with Git setup).
+- All agents work on that specific directory.
+- Everything happens there: implement, review, approve, and any other operations.
+- User selects the directory path in workspace settings.
+
+**Scenario 2: Temp Folder (Default)**
+- A newly-created random working directory per task (`/tmp/malamar_tasks_{task_id}`).
+- Ensures a clean workspace for each task.
+- Good for multi-repo tasks or tasks that require isolation.
+- Agents can clone repositories or create files as needed.
+- This is the default when creating a new workspace.
+
+For temp folder scenarios, agents learn which repositories or resources to work with from the workspace-level instruction or the task description.
 
 ### Agents
 
@@ -161,9 +197,137 @@ There is no hard cap on iteration count or time. The loop continues until:
 - An agent requests "In Review", OR
 - An error occurs (which triggers a retry via the queue)
 
-## Technical Decision Note
+## CLI Adapters
+
+Malamar supports multiple AI CLI tools through an adapter pattern. Each supported CLI has its own adapter with hardcoded configuration for command templates, flags, and capabilities.
+
+### Supported CLIs
+
+1. Claude Code
+2. Gemini CLI
+3. OpenAI Codex CLI
+4. OpenCode
+
+### Auto-Detection
+
+On startup, Malamar automatically searches for available CLIs from the supported list and shows them to the user. Only detected CLIs can be assigned to agents.
+
+### CLI Invocation
+
+Each CLI is invoked via direct shell command. For example:
+
+```shell
+claude --dangerously-skip-permissions --json-schema ... --output-format json --prompt ...
+```
+
+The runner waits for the subprocess to exit before proceeding.
+
+### Response Format Enforcement
+
+- CLIs that support JSON schema flags (e.g., Claude Code) use native schema enforcement for the agent response format.
+- CLIs without schema support have the response format instruction embedded in the prompt.
+
+### CLI Unavailability
+
+Agent assignment to a CLI is allowed even if the CLI isn't currently available. At runtime, if an assigned CLI isn't available, the runner treats it as an error:
+1. System comment is added to the task with error details.
+2. Standard error handling flow applies (new queue item, retry via queue).
+
+## Context Passing
+
+When the runner invokes an agent's CLI, it passes context through temporary files.
+
+### Input File
+
+The runner creates an input file at `/tmp/malamar_task_{task_id}.md` (overwritten for each agent execution). This file contains:
+
+1. **Malamar Context**: Information that the agent is being controlled by Malamar, plus the workspace instruction.
+2. **Agent Instruction**: The agent's own instruction, plus a brief of other agents in the same workspace (names only, no instructions).
+3. **Task Details**: The task summary, description, and all comments.
+4. **Output Instruction**: Instruction to write the result to a pre-created output file.
+
+The CLI is invoked with an instruction like: "Read the file at $FILE_PATH and follow the instruction autonomously."
+
+### Output File
+
+The agent writes its response (the actions JSON) to a pre-created file at `/tmp/malamar_output_{random_nanoid}.json`. The runner reads this file after the subprocess exits.
+
+## Web UI
+
+The web interface is exposed on port `3456` and provides access to all Malamar features.
+
+### Task Creation
+
+Task creation is a simple form with:
+- **Summary**: Short text (title)
+- **Description**: Markdown content
+
+### Real-Time Updates
+
+Two mechanisms for keeping the UI in sync:
+
+1. **Task-Level Polling**: The web UI polls every 3 seconds (using React Query or similar) to gather new task data. This approach works well when the user is actively viewing or commenting on a task.
+
+2. **Global SSE Endpoint**: The web UI connects to a Server-Sent Events endpoint for real-time notifications/toasts when events happen in the backend (e.g., new comment, status change, error occurred). The backend uses an in-process pub/sub event emitter to fan out events.
+
+## Notifications
+
+Malamar can send email notifications via Mailgun API when certain events occur.
+
+### Configurable Events
+
+Users can enable/disable notifications per event type in the settings page:
+
+1. **On error occurred**: Enabled by default
+2. **On task moved to in review**: Enabled by default
+
+### Settings Scope
+
+Notification settings are global with per-workspace overrides. Global settings apply to all workspaces unless a workspace explicitly overrides them.
+
+## User Actions
+
+### Kill Loop
+
+Users can manually kill the current loop of a task if it's stuck or taking too long. When a loop is killed:
+
+1. A system comment is added to the task noting that the user canceled the loop.
+2. The task moves to "In Review" so the user can investigate the problem.
+3. The user can move the task back to "In Progress" when ready to retry.
+
+## Technical Decisions
+
+### Domain Agnostic Design
+
+Malamar is purely an orchestration layer for multi-agent CLI workflows. It has no opinions on what agents do - all domain-specific behavior is defined in agent instructions. Use cases include but are not limited to:
+
+- Software development (coding, reviewing, pushing)
+- Writing blog posts
+- Browser automation via CLI
+- System management
+- HR spreadsheet work
+- Any task achievable via AI CLIs
+
+Malamar only cares about the agent response format so the runner can understand the outcome.
 
 ### Miscellaneous
 
-1. All the ID should be in nanoid format.
+1. All IDs should be in nanoid format.
 2. The mock user ID is `000000000000000000000` (21 zeros, a valid nanoid).
+3. No explicit timeout for CLI execution - let the OS handle it. Users can manually kill loops if needed.
+
+## Aim Far
+
+Future enhancements to consider (not for initial implementation):
+
+### S3 Backup
+
+S3-compatible automatic backup for the SQLite database and files in `~/.malamar`.
+
+### Import/Export
+
+Ability to export workspaces, tasks, and settings for backup or migration, and import them into another Malamar instance.
+
+### Related Tasks Query
+
+Allow agents to query Malamar's API (via CURL to the running port) to collect additional information such as related tasks in the same workspace. This would be passed as additional context in the input file.
