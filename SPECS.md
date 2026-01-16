@@ -1,8 +1,62 @@
 # Malamar Project
 
-Malamar is a personal project of Irving Dinh (me), it is designed to solve my problems:
-1. I've Claude Code, Gemini CLI and also Codex CLI.
-2. I want them working with each other, to checking other works, back to back. When everything is done, it will move to the in review and wait for my touching.
+> **Malamar lets you combine the strengths of different AI CLIs into autonomous multi-agent workflows, limited only by your creativity.**
+
+## Problem Statement
+
+### The Manual Workflow Pain
+
+Working with multiple AI CLI tools today is a tedious, manual process. A typical implementation workflow looks like:
+
+1. Spin up Claude Code, instruct it to discover ideas and write a plan file
+2. Quit Claude Code, spin up Gemini CLI to implement the plan (more context, cheaper)
+3. Quit Gemini CLI, spin up Codex CLI to review Git changes and write a feedback file
+4. Quit Codex CLI, spin up Claude Code to verify feedback and update the plan
+5. Loop until the result is good enough
+
+This "quit, spin up, instruct, repeat" cycle is:
+- **Time-consuming**: Constant context switching between tools
+- **Manual**: Cannot be automated; human is the glue between each step
+- **Lossy**: Context is lost between sessions
+
+### Why Multiple AI Tools
+
+Each AI CLI has distinct strengths and tradeoffs:
+
+| Tool | Strengths | Tradeoffs |
+|------|-----------|-----------|
+| **Claude Code** | Powerful, excellent instruction following | Expensive, low usage limits |
+| **Gemini CLI** | Cheaper, longer context, better writing/multilingual | Weaker instruction following |
+| **Codex CLI** | Good for long working sessions | Can be naive |
+| **OpenCode** | Local LLM via Ollama for compliance/PII | Depends on local hardware |
+
+No single tool is best for everything. The optimal workflow combines their strengths while mitigating their weaknesses.
+
+### The Core Value
+
+Malamar's multi-agent approach (Planner → Implementer → Reviewer → Approver) provides value even with a single CLI:
+
+1. **Automatic mistake catching**: Each agent verifies the work of agents before it
+2. **Separation of concerns**: Focused, specialized steps instead of one monolithic session
+3. **Reduced hallucination**: Shorter, fresh sessions prevent long-context hallucination where AI makes mistakes late in a session that it wouldn't make in a fresh context
+
+### The Vision
+
+With Malamar, the workflow becomes:
+
+1. Set up a workspace with agents configured to your best practices
+2. Create a task with detailed requirements
+3. Walk away
+4. Come back later - everything is done, automatically
+
+Human intervention happens through the "In Review" status, email notifications, and the ability to steer agents via comments - even remotely from a phone via Tailscale.
+
+### Target Users
+
+Malamar is built for developers and power users who:
+- Use multiple AI CLI tools and want to orchestrate them
+- Want autonomous task completion without constant supervision
+- Need flexibility to define their own workflows via agent instructions
 
 ## Application Architecture
 
@@ -148,6 +202,12 @@ Each task has an event queue to manage processing:
 2. When the runner picks up a queue item, its status changes to "in_progress"
 3. If a new task event is emitted while a queue item is "in_progress", a new item is added with status "queued"
 4. If a new task event is emitted while there's already both an "in_progress" and a "queued" item for that task, no new queue item is added
+
+#### Queue Pickup Priority
+
+The runner does **not** use FIFO ordering. Instead, it prioritizes the task that was most recently processed. This ensures the runner "sticks with" a task until it moves to "In Review" before picking up other tasks.
+
+**Rationale**: Tackle one task until completion, rather than starting many tasks but finishing none.
 
 #### Status Transitions
 
