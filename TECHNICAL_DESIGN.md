@@ -110,6 +110,43 @@ task_queue
 └── updated_at: datetime
 ```
 
+#### Chats
+
+```
+chats
+├── id: string (nanoid, primary key)
+├── workspace_id: string (foreign key)
+├── agent_id: string? (foreign key, NULL if chatting with Malamar agent)
+├── cli_type: string? (NULL = respect agent's CLI or Malamar default)
+├── title: string (default: "Untitled chat")
+├── created_at: datetime
+└── updated_at: datetime
+```
+
+#### Chat Messages
+
+```
+chat_messages
+├── id: string (nanoid, primary key)
+├── chat_id: string (foreign key)
+├── role: enum ("user" | "agent" | "system")
+├── message: string (the conversational text)
+├── actions: json? (null for user/system, optional array for agent)
+├── created_at: datetime
+```
+
+#### Chat Queue
+
+```
+chat_queue
+├── id: string (nanoid, primary key)
+├── chat_id: string (foreign key)
+├── workspace_id: string (foreign key)
+├── status: enum ("queued" | "in_progress" | "completed" | "failed")
+├── created_at: datetime
+└── updated_at: datetime
+```
+
 #### Global Settings
 
 ```
@@ -131,9 +168,10 @@ Settings keys include:
 
 When entities are deleted, associated data is cascade deleted:
 
-- **Workspace deleted**: All agents, tasks, comments, activity logs, and queue items
+- **Workspace deleted**: All agents, tasks, comments, activity logs, task queue items, chats, chat messages, and chat queue items
 - **Task deleted**: All comments, activity logs, and queue items
-- **Agent deleted**: Comments retain `agent_id` for reference, display shows "(Deleted Agent)"
+- **Chat deleted**: All chat messages and chat queue items (attachment directory left for OS cleanup)
+- **Agent deleted**: Comments and chats retain `agent_id` for reference; comments display "(Deleted Agent)", chats are switched to Malamar agent
 
 ---
 
@@ -311,6 +349,90 @@ Location: `/tmp/malamar_output_{random_nanoid}.json` (pre-created, unique per ex
 }
 ```
 
+### Chat Context Passing
+
+#### Chat Input File
+
+Location: `/tmp/malamar_chat_{chat_id}.md` (overwritten for each message processing)
+
+```markdown
+# Malamar Chat Context
+
+You are being invoked by Malamar's chat feature.
+{agent instruction here}
+
+## Chat Metadata
+
+- Chat ID: abc123
+- Workspace: My Project
+- Agent: Malamar (or agent name)
+
+## Conversation History
+
+​```json
+{"role": "user", "content": "Help me create a reviewer agent", "created_at": "2025-01-17T10:00:00Z"}
+{"role": "agent", "content": "Sure! What kind of work will this reviewer focus on?", "created_at": "2025-01-17T10:00:30Z"}
+{"role": "user", "content": "Code review for TypeScript", "created_at": "2025-01-17T10:01:00Z"}
+{"role": "system", "content": "User has uploaded /tmp/malamar_chat_abc123_attachments/style-guide.md", "created_at": "2025-01-17T10:01:30Z"}
+​```
+
+## Additional Context
+
+For workspace state and settings, read: /tmp/malamar_chat_abc123_context.md
+
+# Output Instruction
+
+Write your response as JSON to: /tmp/malamar_chat_abc123_output.json
+```
+
+**Format Notes:**
+- Conversation history in JSONL format (one JSON per line) inside code block
+- All messages included (user, agent, and system) in ASC order
+- System messages contain error info and file attachment notifications
+
+#### Chat Context File
+
+Location: `/tmp/malamar_chat_{chat_id}_context.md` (separate file for workspace state)
+
+This file is referenced in the input file but agents read it only when needed. Contains:
+- Workspace settings (title, description, working directory, cleanup settings, notifications)
+- All agents with their IDs and instructions (ordered), e.g., "Planner (id: 123456abcdef)"
+- Global settings (available CLIs and their health status, Mailgun configuration status)
+
+Task summaries are NOT included.
+
+#### Chat Output File
+
+Location: `/tmp/malamar_chat_{chat_id}_output.json`
+
+```json
+{
+  "message": "I've created a Reviewer agent for TypeScript code review.",
+  "actions": [
+    { "type": "create_agent", "name": "Reviewer", "instruction": "...", "cli_type": "claude", "order": 3 }
+  ]
+}
+```
+
+**Format Notes:**
+- `message` field is optional but encouraged
+- `actions` array is optional; if present, each action is executed immediately
+
+#### Chat Working Directory
+
+The chat CLI is invoked with a working directory that respects the workspace setting:
+
+- **Temp Folder mode**: `/tmp/malamar_chat_{chat_id}` (created per chat)
+- **Static Directory mode**: The path configured in workspace settings
+
+This allows chat agents to have full access to the workspace's working environment (e.g., browse repository files, run commands, make changes).
+
+#### Chat Attachments
+
+Location: `/tmp/malamar_chat_{chat_id}_attachments/{filename}`
+
+Files are stored here when users upload them. A system message is added to the chat noting the file path. Duplicate filenames overwrite existing files.
+
 ### Mailgun Integration
 
 Email notifications are sent via fire-and-forget async calls. No separate background job - triggered inline but non-blocking.
@@ -367,6 +489,16 @@ Email notifications are sent via fire-and-forget async calls. No separate backgr
 #### Activity Logs
 - `GET /api/tasks/:id/logs` - List activity logs
 
+#### Chats
+- `GET /api/workspaces/:id/chats` - List chats in workspace
+- `POST /api/workspaces/:id/chats` - Create chat (specify agent_id or null for Malamar)
+- `GET /api/chats/:id` - Get chat details with messages
+- `PUT /api/chats/:id` - Update chat (title, agent_id, cli_type)
+- `DELETE /api/chats/:id` - Delete chat
+- `POST /api/chats/:id/messages` - Send a message (triggers processing)
+- `POST /api/chats/:id/cancel` - Cancel processing (kills CLI subprocess)
+- `POST /api/chats/:id/attachments` - Upload file attachment
+
 #### Settings
 - `GET /api/settings` - Get all settings
 - `PUT /api/settings` - Update settings
@@ -397,14 +529,28 @@ data: {"task_id": "xxx", "task_summary": "...", "author_name": "Planner", "works
 event: task.error_occurred
 data: {"task_id": "xxx", "task_summary": "...", "error_message": "CLI exited with code 1", "workspace_id": "yyy"}
 
+event: task.created
+data: {"task_id": "xxx", "task_summary": "...", "workspace_id": "yyy"}
+
 event: agent.execution_started
 data: {"task_id": "xxx", "task_summary": "...", "agent_name": "Implementer", "workspace_id": "yyy"}
 
 event: agent.execution_finished
 data: {"task_id": "xxx", "task_summary": "...", "agent_name": "Implementer", "workspace_id": "yyy"}
+
+event: chat.message_added
+data: {"chat_id": "xxx", "chat_title": "...", "author_type": "user|agent|system", "workspace_id": "yyy"}
+
+event: chat.processing_started
+data: {"chat_id": "xxx", "chat_title": "...", "agent_name": "Malamar", "workspace_id": "yyy"}
+
+event: chat.processing_finished
+data: {"chat_id": "xxx", "chat_title": "...", "agent_name": "Malamar", "workspace_id": "yyy"}
 ```
 
 Backend uses in-process pub/sub event emitter to fan out to connected clients.
+
+**Task Created via Chat:** The `task.created` event is emitted when an agent uses the `create_task` action from chat. The UI shows a toast with a clickable link to the new task.
 
 ### Single Executable Distribution
 
@@ -482,7 +628,8 @@ Log formats: `text`, `json`
 #### Cleanup Job
 
 - **Type**: Scheduled daily
-- **Queue cleanup**: Delete completed/failed items > 7 days old
+- **Task queue cleanup**: Delete completed/failed task queue items > 7 days old
+- **Chat queue cleanup**: Delete completed/failed chat queue items > 7 days old
 - **Task cleanup**: Delete done tasks exceeding workspace retention period
 
 #### CLI Health Check Job

@@ -125,6 +125,17 @@ Agent also be setup to be assigned into an AI CLI (if many is available), for ex
 
 The agent is all about the system instruction, where it will pasted into the Claude Code/Gemini CLI/Codex CLI/etc. when running.
 
+#### Agent Instructions Responsibility
+
+Writing effective agent instructions is the **user's responsibility**. The user must define:
+- **WHEN** to skip, comment, or move a task to "In Review"
+- **WHAT** the agent should focus on and verify
+
+Malamar's responsibility is the **HOW**:
+- Ensuring agents respond in the correct format
+- Executing the actions agents return
+- Managing the loop and queue mechanics
+
 #### Agent Identification
 
 Each agent has its own nanoid. The default example agents (Planner, Implementer, Reviewer, Approver) are auto-created per workspace, but users can edit, delete, add, and reorder them.
@@ -215,6 +226,138 @@ Activity logs are created for:
 - Agent execution finished
 - Task properties edited (title, description)
 - Loop canceled by user
+
+### Chat
+
+The Chat feature allows users to have conversations with agents within a workspace. Users can chat with:
+- **Any workspace agent** - For ad-hoc assistance related to that agent's expertise
+- **The Malamar agent** - A special built-in agent designed to help manage the workspace, create/tune agents, and answer questions about Malamar
+
+#### Chat Entity
+
+Each chat belongs to a workspace and is associated with either a workspace agent or the Malamar agent.
+
+**Chat Fields:**
+- `id: string` - Unique identifier (nanoid)
+- `workspace_id: string` - The workspace this chat belongs to
+- `agent_id?: string` - The workspace agent (NULL if chatting with Malamar agent)
+- `cli_type?: string` - CLI override (NULL = respect agent's CLI or Malamar default)
+- `title: string` - Chat title (default: "Untitled chat")
+- `created_at: datetime`
+- `updated_at: datetime`
+
+**CLI Selection Behavior:**
+1. **Malamar agent** (agent_id is NULL): Uses first available CLI in order: Claude Code → Gemini CLI → Codex CLI → OpenCode
+2. **Workspace agents**: Uses the CLI configured on the agent
+3. **CLI override** (cli_type is not NULL): Overrides both of the above
+
+#### Chat Messages
+
+**Chat Message Fields:**
+- `id: string` - Unique identifier (nanoid)
+- `chat_id: string` - The chat this message belongs to
+- `role: enum` - "user", "agent", or "system"
+- `message: string` - The conversational text
+- `actions: json?` - NULL for user/system messages; optional array for agent messages
+- `created_at: datetime`
+
+**System messages** are used for:
+- Error information (e.g., "Error: CLI exited with code 1")
+- File attachment notifications (e.g., "User has uploaded /tmp/malamar_chat_{chat_id}_attachments/{filename}")
+
+#### Chat Actions
+
+When an agent responds in a chat, it can include actions alongside its message:
+
+```json
+{
+  "message": "I've created a Reviewer agent for TypeScript code review.",
+  "actions": [
+    { "type": "create_agent", "name": "Reviewer", "instruction": "...", "cli_type": "claude", "order": 3 }
+  ]
+}
+```
+
+The `message` field is encouraged but not required. Actions are displayed as structured cards/badges below the message text in the UI.
+
+**Action Types - All Chat Agents:**
+- `rename_chat` - Set the chat title: `{ "type": "rename_chat", "title": "..." }`
+- `create_task` - Create a new task: `{ "type": "create_task", "summary": "...", "description": "..." }`
+
+**Action Types - Malamar Agent Only:**
+- `create_agent` - Create a new agent: `{ "type": "create_agent", "name": "...", "instruction": "...", "cli_type": "claude|gemini|codex|opencode", "order": number }`
+- `update_agent` - Modify an agent: `{ "type": "update_agent", "agent_id": "...", "name?": "...", "instruction?": "...", "cli_type?": "..." }`
+- `delete_agent` - Remove an agent: `{ "type": "delete_agent", "agent_id": "..." }`
+- `reorder_agents` - Change execution order: `{ "type": "reorder_agents", "agent_ids": ["id1", "id2", "id3"] }`
+- `update_workspace` - Modify workspace settings: `{ "type": "update_workspace", "title?": "...", "description?": "...", ... }`
+
+**Action Execution:** Actions are executed immediately when the agent responds - no confirmation step. If an action fails (e.g., duplicate agent name, invalid agent ID), a system message is added with the error details.
+
+#### Chat Processing
+
+Chat processing is similar to task processing:
+
+1. User sends a message
+2. Malamar collects all messages in the chat plus metadata (agent instruction, workspace context)
+3. Serialize into a markdown file at `/tmp/malamar_chat_{chat_id}.md`
+4. Instruct the CLI to read from it and respond in a format Malamar can parse
+5. CLI writes response to `/tmp/malamar_chat_{chat_id}_output.json`
+6. Malamar parses the response, executes any actions, and displays the message
+
+**Working Directory:** The chat respects the workspace's working directory setting:
+- **Temp Folder mode**: Creates `/tmp/malamar_chat_{chat_id}` as the working directory
+- **Static Directory mode**: Uses the directory defined in the workspace settings
+
+This enables agents to work with full context of the workspace. For example, if the workspace points to a repository, the agent can browse files, run commands, and make changes during the chat.
+
+**Chat Queue:** Chat processing is tracked via a `chat_queue` table with the same states as task queue (queued, in_progress, completed, failed). No PID storage needed - the processor holds the subprocess reference in memory.
+
+**Concurrency:**
+- Chats within one workspace CAN process concurrently (unlike tasks which are one-at-a-time)
+- No limit on concurrent chat processing across workspaces
+- UI prevents sending multiple messages in the same chat while a response is pending
+
+**Error Handling:** Errors are displayed as system messages in the chat (e.g., "Error: CLI exited with code 1" or "Error: Output file was empty"). System messages are visible to users and included in the input file when the conversation continues.
+
+#### Malamar Agent
+
+The Malamar agent is a special built-in agent that helps users manage their workspace:
+- Create, update, delete, and reorder agents
+- Update workspace settings
+- Answer questions about how to use Malamar
+- Help users write effective agent instructions
+
+**Instruction Source:** The Malamar agent's instruction is hardcoded in Malamar's codebase, with extra instructions pointing to a remote knowledge base URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/SKILLS/README.md`) for discovering best practices and documentation.
+
+**Context File:** When chatting with any agent (including Malamar), a context file at `/tmp/malamar_chat_{chat_id}_context.md` contains:
+- Workspace settings (title, description, working directory, cleanup settings, notifications)
+- All agents with their IDs and instructions (ordered), e.g., "Planner (id: 123456abcdef)"
+- Global settings (available CLIs and their health status, Mailgun configuration status)
+
+The agent is instructed to read this file ONLY when needed. Task summaries are NOT included.
+
+#### File Attachments
+
+Users can upload files into a chat:
+
+1. User uploads a file (any format, no size limit)
+2. File is placed at `/tmp/malamar_chat_{chat_id}_attachments/{filename}`
+3. A system message is created: "User has uploaded /tmp/malamar_chat_{chat_id}_attachments/{filename}"
+4. The agent can reference the file in subsequent responses
+
+**Multiple files:** Each file creates its own system message.
+
+**Duplicate filenames:** Overwrites the existing file (no delete attachment functionality).
+
+**Cleanup:** Attachment directories are left for the OS to clean up naturally via `/tmp` cleanup, consistent with other temp files.
+
+#### Chat and Agent Deletion
+
+**When an agent is deleted:** Any chat using that agent is automatically switched to the Malamar agent. Users can also manually change the chat's agent via a dropdown in the chat UI.
+
+**When a chat is deleted:** Simple confirm popup. The chat and all messages are deleted. Attachment directory is left for OS cleanup.
+
+**When a workspace is deleted:** All chats and chat messages are cascade deleted.
 
 ### Task Router/Runner
 
@@ -455,9 +598,13 @@ The home page displays a list of workspaces as cards. Each workspace card shows:
 2. **Created date**: ASC or DESC by `created_at`
 3. **Updated date**: ASC or DESC by `updated_at`
 
-### Workspace Detail Page (Kanban Board)
+### Workspace Detail Page
 
-When accessing a workspace, the user sees a Kanban board of tasks, similar to JIRA, Trello, or Linear.
+When accessing a workspace, the user sees tabs for different views:
+
+#### Tasks Tab (Kanban Board)
+
+The default view is a Kanban board of tasks, similar to JIRA, Trello, or Linear.
 
 **Columns:**
 - Four hardcoded columns mapping directly to task statuses: Todo, In Progress, In Review, Done
@@ -469,6 +616,50 @@ When accessing a workspace, the user sees a Kanban board of tasks, similar to JI
 **Interactions:**
 - Drag-and-drop between columns is NOT supported - status changes only happen through the task detail popup
 - Clicking a task opens the task detail popup
+
+#### Chat Tab
+
+The Chat tab displays a list of previous chats, ordered by recently active (chats with recent messages at the top).
+
+**Chat List Display:**
+Each chat item shows:
+- Title
+- Agent name
+- Last message/action preview
+- Timestamp of last activity (human diff format, e.g., "2 hours ago")
+
+**Creating New Chats:**
+A dropdown button allows creating a new chat. Selectable items are:
+- Malamar Agent
+- All workspace agents
+
+**Chat Detail Popup:**
+Clicking a chat opens a popup with:
+- **Header**: Chat title (editable inline by clicking) and agent name (as a dropdown to change agents)
+- **CLI Selector**: Dropdown next to agent selector to override which CLI handles the chat
+- **Message List**: All messages displayed with oldest on top (natural reading order)
+- **Input Area**: Text input with attachment icon and send/stop button
+
+**Agent and CLI Selection:**
+- Agent dropdown and CLI dropdown are side by side in the header
+- Changing agent → auto-updates CLI dropdown to match that agent's configured CLI (sets `cli_type` to NULL)
+- Manually changing CLI → saves `cli_type` override to the chat
+- Changing the agent does NOT affect conversation history - only future messages use the new agent
+
+**Processing Indicator:**
+While a chat is processing:
+- Send button changes to a stop button (with pulse animation)
+- User cannot send another message until processing completes
+- Clicking stop cancels the processing (kills CLI subprocess, marks queue item as failed)
+
+**File Attachments:**
+- Attachment icon next to the message input box
+- Clicking opens file picker (any file format, no size limit)
+- Uploaded files appear as system messages in the chat
+
+#### Agents Tab
+
+(Existing agent management functionality)
 
 ### Task Detail Popup
 
@@ -524,10 +715,16 @@ Two mechanisms for keeping the UI in sync:
 | `task.status_changed` | task_id, task_summary, old_status, new_status, workspace_id |
 | `task.comment_added` | task_id, task_summary, author_name, workspace_id |
 | `task.error_occurred` | task_id, task_summary, error_message, workspace_id |
+| `task.created` | task_id, task_summary, workspace_id (triggered when created via chat action) |
 | `agent.execution_started` | task_id, task_summary, agent_name, workspace_id |
 | `agent.execution_finished` | task_id, task_summary, agent_name, workspace_id |
+| `chat.message_added` | chat_id, chat_title, author_type (user/agent/system), workspace_id |
+| `chat.processing_started` | chat_id, chat_title, agent_name, workspace_id |
+| `chat.processing_finished` | chat_id, chat_title, agent_name, workspace_id |
 
 Payloads are self-contained for toast display - no refetch needed for the notification itself.
+
+**Task Created via Chat:** When an agent uses the `create_task` action from chat, a `task.created` SSE event is emitted. The UI shows a toast notification with a clickable link to open the newly created task.
 
 ## Notifications
 
@@ -634,7 +831,10 @@ Users can delete a task. This follows the same pattern as workspace deletion:
 Malamar runs several background jobs to keep the system running smoothly:
 
 - **Runner**: The main job that continuously processes tasks, picking up queue items and executing agent loops.
-- **Cleanup Job**: A daily job that cleans up old queue items and auto-deletes Done tasks based on workspace retention settings.
+- **Cleanup Job**: A daily job that:
+  - Cleans up old task queue items (completed/failed older than 7 days)
+  - Cleans up old chat queue items (completed/failed older than 7 days)
+  - Auto-deletes Done tasks based on workspace retention settings
 - **CLI Health Check**: Periodically verifies CLI availability and updates status.
 
 For implementation details including polling intervals, concurrent processing, and cleanup logic, see [TECHNICAL_DESIGN.md#background-jobs](./TECHNICAL_DESIGN.md#background-jobs).
@@ -666,3 +866,7 @@ Ability to clone a workspace, including its settings and agents, but starting fr
 ### Agent Client Protocol (ACP)
 
 Investigate using the Agent Client Protocol (ACP, https://zed.dev/acp) as an alternative to calling AI CLIs via subprocess commands. This could provide a more standardized interface for agent communication.
+
+### Community Gallery of Agent Configurations
+
+A gallery where users can share and discover agent configurations created by the community. Users could browse, import, and adapt agent setups for different use cases (code review, blog writing, documentation, etc.).
