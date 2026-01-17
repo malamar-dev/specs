@@ -1,11 +1,18 @@
-# Spec Exploration
+---
+name: explore-specs
+description: Working along with Irving Dinh on clarifying, exploring and extending the specs of Malamar.
+---
+
+# Explore Specs
 
 A collaborative workflow to clarify, explore, and extend ideas in the project specification through a Q&A session.
 
 ## Workflow
 
 1. **Read all context**
-   - Read `SPECS.md` in the workspace root
+   - Read `README.md` for project overview and document navigation
+   - Read `SPECS.md` for product specifications (what and why)
+   - Read `TECHNICAL_DESIGN.md` for technical implementation details (how)
    - Read all files in `MEETING-MINUTES/` folder to understand previous discussions
 
 2. **Ask questions one by one**

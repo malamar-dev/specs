@@ -430,79 +430,14 @@ Agent assignment to a CLI is allowed even if the CLI isn't currently available. 
 
 ## Context Passing
 
-When the runner invokes an agent's CLI, it passes context through temporary files.
+When the runner invokes an agent's CLI, it passes context through temporary files:
 
-### Input File
+- **Input file**: A markdown file containing workspace context, agent instruction, other agents in the workflow, task details (summary, description, comments), activity logs, and output instructions.
+- **Output file**: A pre-created JSON file where the agent writes its response (the actions JSON).
 
-The runner creates an input file at `/tmp/malamar_task_{task_id}.md` (overwritten for each agent execution). This file contains:
+The CLI is invoked with an instruction to read the input file and follow the instructions autonomously. The runner reads the output file after the subprocess exits.
 
-1. **Malamar Context**: Information that the agent is being controlled by Malamar, plus the workspace instruction.
-2. **Agent Instruction**: The agent's own instruction, plus a brief of other agents in the same workspace (names only, no instructions).
-3. **Task Details**: The task summary, description, and all comments.
-4. **Output Instruction**: Instruction to write the result to a pre-created output file.
-
-The CLI is invoked with an instruction like: "Read the file at $FILE_PATH and follow the instruction autonomously."
-
-#### Input File Format
-
-```markdown
-# Malamar Context
-You are being orchestrated by Malamar, a multi-agent workflow system.
-{workspace instruction here}
-
-# Your Role
-{agent instruction here}
-
-## Other Agents in This Workflow
-- Planner
-- Implementer
-- Reviewer
-- Approver
-
-# Task
-## Summary
-{task summary}
-
-## Description
-{task description}
-
-## Comments
-
-​```json
-{"author": "Planner", "agent_id": "abc123xyz", "content": "## My Plan\n\n1. First step\n2. Second step", "created_at": "2025-01-17T10:00:00Z"}
-{"author": "User", "user_id": "000000000000000000000", "content": "Looks good, proceed!", "created_at": "2025-01-17T10:05:00Z"}
-{"author": "System", "content": "Error: CLI timeout after 30s", "created_at": "2025-01-17T10:10:00Z"}
-​```
-
-## Activity Log
-
-​```json
-{"event_type": "created", "actor_type": "user", "actor_id": "000000000000000000000", "created_at": "2025-01-17T09:55:00Z"}
-{"event_type": "status_changed", "actor_type": "system", "metadata": {"old_status": "todo", "new_status": "in_progress"}, "created_at": "2025-01-17T09:56:00Z"}
-{"event_type": "agent_started", "actor_type": "agent", "actor_id": "abc123xyz", "metadata": {"agent_name": "Planner"}, "created_at": "2025-01-17T09:56:01Z"}
-{"event_type": "comment_added", "actor_type": "agent", "actor_id": "abc123xyz", "created_at": "2025-01-17T10:00:00Z"}
-​```
-
-# Output Instruction
-Write your response as JSON to: /tmp/malamar_output_{random_nanoid}.json
-```
-
-**Comment Format Notes:**
-- Comments are in JSONL format (one JSON object per line) inside a code block.
-- This prevents markdown content in comments from breaking the file structure.
-- The `author` field values:
-  - Agent comments: the agent's name at the time the comment was created
-  - System comments: "System"
-  - User comments: "User"
-- The "Other Agents" list reflects agents at the moment of input file creation.
-
-**Ordering Notes:**
-- In the input file, both comments and activity logs are ordered in ASC (oldest first) so agents can read the conversation in natural chronological flow.
-- In the UI, both are displayed in DESC order (newest first) for easy catch-up on recent changes.
-
-### Output File
-
-The agent writes its response (the actions JSON) to a pre-created file at `/tmp/malamar_output_{random_nanoid}.json`. The runner reads this file after the subprocess exits.
+For the detailed file format specification and examples, see [TECHNICAL_DESIGN.md#context-passing](./TECHNICAL_DESIGN.md#context-passing).
 
 ## Web UI
 
@@ -696,144 +631,13 @@ Users can delete a task. This follows the same pattern as workspace deletion:
 
 ## Background Jobs
 
-Malamar runs several background jobs:
+Malamar runs several background jobs to keep the system running smoothly:
 
-### Runner
+- **Runner**: The main job that continuously processes tasks, picking up queue items and executing agent loops.
+- **Cleanup Job**: A daily job that cleans up old queue items and auto-deletes Done tasks based on workspace retention settings.
+- **CLI Health Check**: Periodically verifies CLI availability and updates status.
 
-The main job that processes tasks:
-- Runs as a continuous loop with 1 second sleep between checks.
-- Spawns concurrent workers per workspace (see Concurrent Processing).
-- Picks up queue items based on priority order.
-
-### Cleanup Job
-
-A single daily background job that handles both queue cleanup and done task cleanup:
-
-**Queue Cleanup:**
-- Deletes `completed` and `failed` queue items older than 7 days
-- Leaves `queued` and `in_progress` items untouched
-
-**Done Task Cleanup:**
-- Deletes tasks in "Done" status that have exceeded their workspace's retention period
-- Retention is configurable per workspace (default: 7 days, set to 0 to disable auto-deletion)
-- Cascade deletes all associated data: comments, activity logs, queue items
-
-**Task Deletion Cascade:** When any task is deleted (manually, via "Delete all Done tasks", or auto-cleanup), all associated data is cascade deleted: comments, activity logs, and queue items.
-
-### CLI Health Check
-
-Periodically verifies CLI availability:
-- Runs every 5 minutes.
-- Updates in-memory CLI status.
-- UI polls a health endpoint to get current status (no SSE push for CLI changes).
-
-### Email Notifications
-
-Email notifications are sent via fire-and-forget async calls when events occur. This is not a separate background job - notifications are triggered inline but don't block the runner.
-
-**Failure Handling:** If Mailgun is misconfigured or the API call fails, the failure is silently logged to the application error log. There is no user-facing alert for notification failures.
-
-## Technical Decisions
-
-### Domain Agnostic Design
-
-Malamar is purely an orchestration layer for multi-agent CLI workflows. It has no opinions on what agents do - all domain-specific behavior is defined in agent instructions. Use cases include but are not limited to:
-
-- Software development (coding, reviewing, pushing)
-- Writing blog posts
-- Browser automation via CLI
-- System management
-- HR spreadsheet work
-- Any task achievable via AI CLIs
-
-Malamar only cares about the agent response format so the runner can understand the outcome.
-
-### Database Migrations
-
-The application runs database migrations automatically on startup. If a migration fails, the application panics to ensure data consistency. This approach ensures that schema changes (e.g., adding the `task_logs` table or `last_activity_at` column) are applied reliably.
-
-**Note:** Alternative schema-free embedded databases may be explored in the future.
-
-### Miscellaneous
-
-1. All IDs should be in nanoid format.
-2. The mock user ID is `000000000000000000000` (21 zeros, a valid nanoid).
-3. No explicit timeout for CLI execution - let the OS handle it. Users can manually kill loops if needed.
-
-## Implementation
-
-This section covers technical implementation details that will be expanded in the TECHNICAL_DESIGN document.
-
-### Tech Stack
-
-**Backend:**
-- TypeScript with Bun runtime
-- RESTful API
-- Background jobs (runner, cleanup, health check)
-- SSE endpoint for real-time updates
-- SQLite database
-
-**Frontend:**
-- TypeScript with React (via create-vite-app)
-- Bun as the build tool/runtime
-
-### Single Executable Distribution
-
-The goal is to distribute Malamar as a single executable binary.
-
-**Preferred approach:** Bundle the frontend build output directly into the Bun binary using `bun build --compile`, serving embedded static assets if supported.
-
-**Fallback approach:**
-1. Compress the UI dist into the binary
-2. On startup, decompress to `~/.malamar/ui/` (or similar)
-3. Serve static files from that location
-4. Overwrite on each startup to ensure UI matches the binary version
-
-### Configuration
-
-Configuration can be set via environment variables or CLI flags. Environment variables take priority over CLI flags.
-
-**Server:**
-| Setting | Env Var | CLI Flag | Default |
-|---------|---------|----------|---------|
-| Bind address | `MALAMAR_HOST` | `--host` | `127.0.0.1` |
-| Server port | `MALAMAR_PORT` | `--port` | `3456` |
-
-**Data & Storage:**
-| Setting | Env Var | CLI Flag | Default |
-|---------|---------|----------|---------|
-| Data directory | `MALAMAR_DATA_DIR` | `--data-dir` | `~/.malamar` |
-
-**Logging:**
-| Setting | Env Var | CLI Flag | Default |
-|---------|---------|----------|---------|
-| Log verbosity | `MALAMAR_LOG_LEVEL` | `--log-level` | `info` |
-| Output format | `MALAMAR_LOG_FORMAT` | `--log-format` | `text` |
-
-Log levels: `debug`, `info`, `warn`, `error`
-Log formats: `text`, `json`
-
-**Runner:**
-| Setting | Env Var | CLI Flag | Default |
-|---------|---------|----------|---------|
-| Poll interval (ms) | `MALAMAR_RUNNER_POLL_INTERVAL` | `--runner-poll-interval` | `1000` |
-
-**Temp Files:**
-| Setting | Env Var | CLI Flag | Default |
-|---------|---------|----------|---------|
-| Temp directory | `MALAMAR_TEMP_DIR` | `--temp-dir` | System `/tmp` |
-
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `malamar` | Start the server (default) |
-| `malamar version` | Show version info |
-| `malamar help` | Show help/usage |
-| `malamar doctor` | Check system health (CLIs, database, config) |
-| `malamar config` | Show current configuration |
-| `malamar export` | Export data (details TBD) |
-| `malamar import` | Import data (details TBD) |
+For implementation details including polling intervals, concurrent processing, and cleanup logic, see [TECHNICAL_DESIGN.md#background-jobs](./TECHNICAL_DESIGN.md#background-jobs).
 
 ## Aim Far
 
