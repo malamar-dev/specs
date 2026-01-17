@@ -186,6 +186,32 @@ Each comment has the following fields:
 
 **Deleted Agent Handling:** If a comment was made by an agent that has since been deleted, display "(Deleted Agent)" as the author name. The `agent_id` is kept for reference, but the display gracefully handles missing agents.
 
+### Activity Logs
+
+Activity logs provide a linear audit trail of everything that happens to a task. They are stored in a separate `task_logs` table alongside `task_comments`.
+
+#### Activity Log Fields
+
+Each activity log entry has the following fields:
+- `task_id: string` - The task this log belongs to
+- `workspace_id: string` - The workspace this log belongs to
+- `event_type: string` - The type of event (e.g., "created", "status_changed", "comment_added", "agent_started", "agent_finished")
+- `actor_type: string` - Who triggered the event ("user", "agent", or "system")
+- `actor_id?: string` - The user_id or agent_id (nullable for system events)
+- `metadata: JSON` - Event-specific data (e.g., `{"old_status": "todo", "new_status": "in_progress"}`)
+- `created_at: Date`
+
+#### Tracked Events
+
+Activity logs are created for:
+- Task created
+- Task status changed (with old/new status in metadata)
+- Comment added
+- Agent execution started
+- Agent execution finished
+- Task properties edited (title, description)
+- Loop canceled by user
+
 ### Task Router/Runner
 
 Task router takes the responsibility to bind the task with the agent.
@@ -222,9 +248,10 @@ Each task has an event queue to manage processing.
 
 The runner picks up queue items in the following order (per workspace):
 
-1. **Priority flag first**: Any queue item with `is_priority: true` and status `queued`
-2. **Most recently processed task**: Find the task that most recently has a `completed` or `failed` queue item, then pick its `queued` item
-3. **LIFO fallback**: If no recent history, pick the most recently updated `queued` item (by `updated_at`)
+1. **Status filter first**: Only consider queue items where the associated task has status "Todo" or "In Progress". Queue items for tasks in "In Review" or "Done" are ignored until the status changes back. This prevents wasted runner cycles.
+2. **Priority flag**: Any queue item with `is_priority: true` and status `queued`
+3. **Most recently processed task**: Find the task that most recently has a `completed` or `failed` queue item, then pick its `queued` item
+4. **LIFO fallback**: If no recent history, pick the most recently updated `queued` item (by `updated_at`)
 
 **Rationale**: Tackle one task until completion, rather than starting many tasks but finishing none. LIFO ordering allows users to "bump" a task by commenting on it (which updates the queue item's `updated_at`).
 
@@ -436,6 +463,15 @@ You are being orchestrated by Malamar, a multi-agent workflow system.
 {"author": "System", "content": "Error: CLI timeout after 30s", "created_at": "2025-01-17T10:10:00Z"}
 ​```
 
+## Activity Log
+
+​```json
+{"event_type": "created", "actor_type": "user", "actor_id": "000000000000000000000", "created_at": "2025-01-17T09:55:00Z"}
+{"event_type": "status_changed", "actor_type": "system", "metadata": {"old_status": "todo", "new_status": "in_progress"}, "created_at": "2025-01-17T09:56:00Z"}
+{"event_type": "agent_started", "actor_type": "agent", "actor_id": "abc123xyz", "metadata": {"agent_name": "Planner"}, "created_at": "2025-01-17T09:56:01Z"}
+{"event_type": "comment_added", "actor_type": "agent", "actor_id": "abc123xyz", "created_at": "2025-01-17T10:00:00Z"}
+​```
+
 # Output Instruction
 Write your response as JSON to: /tmp/malamar_output_{random_nanoid}.json
 ```
@@ -449,6 +485,10 @@ Write your response as JSON to: /tmp/malamar_output_{random_nanoid}.json
   - User comments: "User"
 - The "Other Agents" list reflects agents at the moment of input file creation.
 
+**Ordering Notes:**
+- In the input file, both comments and activity logs are ordered in ASC (oldest first) so agents can read the conversation in natural chronological flow.
+- In the UI, both are displayed in DESC order (newest first) for easy catch-up on recent changes.
+
 ### Output File
 
 The agent writes its response (the actions JSON) to a pre-created file at `/tmp/malamar_output_{random_nanoid}.json`. The runner reads this file after the subprocess exits.
@@ -456,6 +496,44 @@ The agent writes its response (the actions JSON) to a pre-created file at `/tmp/
 ## Web UI
 
 The web interface is exposed on port `3456` and provides access to all Malamar features.
+
+### Workspace List Page
+
+The home page displays a list of workspaces as cards. Each workspace card shows:
+- Workspace name
+- Number of agents
+- Number of tasks in Todo / In Progress / In Review (Done count is not shown on the list page)
+
+**Sorting Options:**
+1. **Recently active** (default): Sorted by `last_activity_at` descending. This column is updated whenever any tracked event occurs in the workspace (task created, status changed, comment added, agent execution started/finished, etc.).
+2. **Created date**: ASC or DESC by `created_at`
+3. **Updated date**: ASC or DESC by `updated_at`
+
+### Workspace Detail Page (Kanban Board)
+
+When accessing a workspace, the user sees a Kanban board of tasks, similar to JIRA, Trello, or Linear.
+
+**Columns:**
+- Four hardcoded columns mapping directly to task statuses: Todo, In Progress, In Review, Done
+- No grouping or customization for now
+
+**Task Ordering:**
+- Within each column, tasks are ordered by most recently updated on top
+
+**Interactions:**
+- Drag-and-drop between columns is NOT supported - status changes only happen through the task detail popup
+- Clicking a task opens the task detail popup
+
+### Task Detail Popup
+
+When selecting a task from the Kanban board, a popup displays the task's detail. The layout is similar to JIRA or Linear:
+
+1. **Header**: Task title (editable)
+2. **Description**: Markdown content (editable)
+3. **Tab Section**: Switch between "Comments" and "Activity" tabs (dropdown on mobile)
+   - **Comments tab**: Shows all comments in DESC order (newest on top)
+   - **Activity tab**: Shows all activity logs in DESC order (newest on top)
+4. **Action Buttons**: Available actions based on current status (see Task Action Buttons section)
 
 ### Task Creation
 
@@ -517,15 +595,42 @@ Workspace settings only control which events trigger notifications, not the emai
 
 ## User Actions
 
-### Kill Loop
+### Task Action Buttons
 
-Users can manually kill the current loop of a task if it's stuck or taking too long. When a loop is killed:
+Different actions are available depending on the task's current status:
+
+**Todo:**
+- **Delete**: Remove the task entirely
+- **Prioritize**: Force this task to the top of the queue for the next pickup
+
+**In Progress:**
+- **Cancel**: Kill the current loop (sends SIGTERM to CLI subprocess). The task stays in "In Progress" and will be re-picked by the runner. Use "Move to In Review" afterward if you want to pause processing.
+- **Move to In Review**: Manually move the task to await human attention
+- **Prioritize**: Force this task to the top of the queue
+- No "Delete" action - cancel first, move to In Review, then delete if needed
+
+**In Review:**
+- **Move to Todo**: Return the task to the backlog
+- **Delete**: Remove the task entirely
+
+**Done:**
+- **Move to Todo**: Reopen the task
+- **Delete**: Remove the task entirely
+
+### Cancel Loop
+
+Users can manually cancel the current loop of a task if it's stuck or taking too long. When a loop is canceled:
 
 1. Send SIGTERM to the running CLI subprocess.
 2. Leave the output file as-is (no cleanup).
 3. A system comment is added to the task noting that the user canceled the loop.
-4. The task moves to "In Review" so the user can investigate the problem.
-5. The user can move the task back to "In Progress" when ready to retry.
+4. The task stays in "In Progress" - it does NOT automatically move to "In Review".
+5. The runner will re-pick the task following normal queue rules.
+6. If the user wants to pause processing, they should manually "Move to In Review" after canceling.
+
+**Use cases for Cancel:**
+- Un-hang an agent/CLI that appears stuck
+- Make time to rethink the approach before the next loop picks it up
 
 ### Delete Workspace
 
@@ -587,6 +692,12 @@ Malamar is purely an orchestration layer for multi-agent CLI workflows. It has n
 
 Malamar only cares about the agent response format so the runner can understand the outcome.
 
+### Database Migrations
+
+The application runs database migrations automatically on startup. If a migration fails, the application panics to ensure data consistency. This approach ensures that schema changes (e.g., adding the `task_logs` table or `last_activity_at` column) are applied reliably.
+
+**Note:** Alternative schema-free embedded databases may be explored in the future.
+
 ### Miscellaneous
 
 1. All IDs should be in nanoid format.
@@ -608,3 +719,15 @@ Ability to export workspaces, tasks, and settings for backup or migration, and i
 ### Related Tasks Query
 
 Allow agents to query Malamar's API (via CURL to the running port) to collect additional information such as related tasks in the same workspace. This would be passed as additional context in the input file.
+
+### In-Browser Push Notifications
+
+Add in-browser push notifications as a notification channel. Would use the same configurable events as email notifications (on error occurred, on task moved to in review) to keep configuration simple and consistent.
+
+### Clone Workspace
+
+Ability to clone a workspace, including its settings and agents, but starting fresh with no tasks. Useful for creating templates for similar types of work. May also extend to cloning individual agents or tasks.
+
+### Agent Client Protocol (ACP)
+
+Investigate using the Agent Client Protocol (ACP, https://zed.dev/acp) as an alternative to calling AI CLIs via subprocess commands. This could provide a more standardized interface for agent communication.
