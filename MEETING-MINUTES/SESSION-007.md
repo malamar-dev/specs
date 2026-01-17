@@ -121,7 +121,7 @@ The agent is instructed to read this file ONLY when needed. Task summaries are N
 
 Q: How does the Malamar agent know best practices for creating agents, workspace setup, etc.?
 
-A: Discovery-based remote knowledge base. The Malamar agent instruction includes a reference to a root URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/SKILLS/README.md`). This README links to other resources:
+A: Discovery-based remote knowledge base. The Malamar agent instruction includes a reference to a root URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/README.md`). This README links to other resources:
 - Best practices for agents
 - Workspace configuration guidance
 - Troubleshooting

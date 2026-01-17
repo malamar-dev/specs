@@ -327,7 +327,7 @@ The Malamar agent is a special built-in agent that helps users manage their work
 - Answer questions about how to use Malamar
 - Help users write effective agent instructions
 
-**Instruction Source:** The Malamar agent's instruction is hardcoded in Malamar's codebase, with extra instructions pointing to a remote knowledge base URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/SKILLS/README.md`) for discovering best practices and documentation.
+**Instruction Source:** The Malamar agent's instruction is hardcoded in Malamar's codebase, with extra instructions pointing to a remote knowledge base URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/README.md`) for discovering best practices and documentation.
 
 **Context File:** When chatting with any agent (including Malamar), a context file at `/tmp/malamar_chat_{chat_id}_context.md` contains:
 - Workspace settings (title, description, working directory, cleanup settings, notifications)

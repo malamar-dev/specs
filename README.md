@@ -11,3 +11,5 @@ Malamar is a self-contained orchestration layer that coordinates multiple AI CLI
 - **[SPECS.md](./SPECS.md)** - Product specifications: what Malamar does and why. Covers the problem statement, core concepts, entities, user interface, and features.
 
 - **[TECHNICAL_DESIGN.md](./TECHNICAL_DESIGN.md)** - Technical design: how Malamar is built. Covers data model, runtime implementation, integrations, and operations.
+
+- **[AGENTS/](./AGENTS/)** - Knowledge base for the Malamar agent: concepts, patterns, and troubleshooting guidance the AI accesses remotely (via GitHub URL) when answering user messages.
