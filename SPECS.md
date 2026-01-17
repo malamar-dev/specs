@@ -107,6 +107,8 @@ The working directory is configured per workspace. Two scenarios:
 
 For temp folder scenarios, agents learn which repositories or resources to work with from the workspace-level instruction or the task description.
 
+**Working Directory Conflicts:** Malamar does not prevent multiple workspaces from using the same static directory path. Users are responsible for avoiding conflicts if they configure multiple workspaces to point at the same directory.
+
 ### Agents
 
 Each agent has the instruction for example:
@@ -159,6 +161,8 @@ When an agent finishes working on a task, it responds with a JSON structure cont
 **Important:** An agent should NEVER comment "I have nothing to do" or similar. If there's nothing to do, use `skip`.
 
 ### Tasks
+
+**Important:** When creating a task, users must include all context in the task's DESCRIPTION field. Comments are NOT for adding initial context - they are only used to steer agents during processing. The runner may pick up a task immediately after creation, so all necessary information must be in the description from the start.
 
 Each task has the status, of:
 1. Todo: Default, when I just created the task.
@@ -266,6 +270,8 @@ Users can manually prioritize a task for the next loop via a button in the UI:
 
 Only one task can be prioritized at a time per workspace. After processing, the runner returns to normal pickup behavior.
 
+**Behavior with running tasks:** If a task is prioritized while another task is mid-loop in "In Progress", the prioritized task waits until the current loop finishes. Prioritization does NOT interrupt or cancel running tasks. If urgent, the user should prioritize the needed task AND manually cancel the currently running task.
+
 #### Status Transitions
 
 **Runner-triggered transitions** (when a task event is picked up):
@@ -278,6 +284,8 @@ Only one task can be prioritized at a time per workspace. After processing, the 
 - User can move a task from "Done" back to "Todo" or "In Progress" (after commenting or editing the task)
 - User can move a task to "Done" (only humans can mark tasks as done)
 - No restrictions on user-initiated status changes
+
+**Queue Item Creation:** Moving a task to "In Progress" or "Todo" (whether by user or system) always creates a queue item if one doesn't already exist. This ensures the runner always picks up tasks that need processing.
 
 **Auto-demotion:**
 - When the runner picks a task for a new loop, all OTHER "In Progress" tasks in that workspace are automatically moved to "Todo"
@@ -385,7 +393,10 @@ Each CLI has a settings section in the CLI Settings page:
 | Binary Path | Custom path override (empty = use PATH) |
 | Environment Variables | Key-value pairs to inject when running the CLI |
 | Detected Version | Read-only, shows auto-detected version |
-| Status | Read-only: "Available", "Not Found", or "Test Failed" |
+| Status | Read-only: "Healthy" or "Unhealthy" |
+| Error Message | Read-only, optional: details when unhealthy (e.g., "binary not found in PATH", "test prompt returned empty response") |
+
+**Status Simplification:** CLI status is simplified to two states: "Healthy" (CLI is available and working) and "Unhealthy" (CLI is not found or test failed). The optional error message field provides more detail for troubleshooting.
 
 ### CLI Unavailability Warnings
 
@@ -541,6 +552,28 @@ Task creation is a simple form with:
 - **Summary**: Short text (title)
 - **Description**: Markdown content
 
+### Workspace Settings Page
+
+A dedicated settings page for each workspace with the following sections:
+
+**1. General**
+- Title: The workspace name (for the user)
+- Description/Instruction: Context for agents (the workspace-level instruction)
+
+**2. Working Directory**
+- Mode: Static Directory or Temp Folder (default: Temp Folder)
+- Directory Path: Shown only when Static Directory mode is selected
+
+**3. Task Cleanup**
+- Auto-delete Done tasks: ON/OFF toggle (default: ON)
+- Retention period: Number of days before auto-deletion (default: 7, set to 0 to disable)
+
+**4. Notifications**
+- On error occurred: ON/OFF (inherits global default)
+- On task moved to In Review: ON/OFF (inherits global default)
+
+**Note:** Task cleanup settings are per-workspace with no global default configuration. The 7-day retention is hardcoded as the default for new workspaces.
+
 ### Real-Time Updates
 
 Two mechanisms for keeping the UI in sync:
@@ -617,6 +650,17 @@ Different actions are available depending on the task's current status:
 - **Move to Todo**: Reopen the task
 - **Delete**: Remove the task entirely
 
+### Delete All Done Tasks
+
+Users can bulk-delete all tasks in the "Done" column for a workspace:
+
+1. User clicks "Delete all Done tasks" action (available on the workspace/board view)
+2. User must type the workspace name to confirm (similar to workspace deletion)
+3. All tasks with "Done" status in that workspace are deleted
+4. Cascade deletes all associated data: comments, activity logs, queue items
+
+This is a destructive action requiring confirmation because it affects multiple tasks at once.
+
 ### Cancel Loop
 
 Users can manually cancel the current loop of a task if it's stuck or taking too long. When a loop is canceled:
@@ -627,6 +671,8 @@ Users can manually cancel the current loop of a task if it's stuck or taking too
 4. The task stays in "In Progress" - it does NOT automatically move to "In Review".
 5. The runner will re-pick the task following normal queue rules.
 6. If the user wants to pause processing, they should manually "Move to In Review" after canceling.
+
+**Child Processes:** Malamar is only responsible for terminating the CLI process itself. If the CLI has spawned child processes, those are the CLI's responsibility to handle gracefully - Malamar cannot control them.
 
 **Use cases for Cancel:**
 - Un-hang an agent/CLI that appears stuck
@@ -659,12 +705,20 @@ The main job that processes tasks:
 - Spawns concurrent workers per workspace (see Concurrent Processing).
 - Picks up queue items based on priority order.
 
-### Queue Cleanup
+### Cleanup Job
 
-Cleans up old queue items to prevent table overflow:
-- Runs on a cron schedule (e.g., daily).
-- Deletes `completed` and `failed` queue items older than 7 days.
-- Leaves `queued` and `in_progress` items untouched.
+A single daily background job that handles both queue cleanup and done task cleanup:
+
+**Queue Cleanup:**
+- Deletes `completed` and `failed` queue items older than 7 days
+- Leaves `queued` and `in_progress` items untouched
+
+**Done Task Cleanup:**
+- Deletes tasks in "Done" status that have exceeded their workspace's retention period
+- Retention is configurable per workspace (default: 7 days, set to 0 to disable auto-deletion)
+- Cascade deletes all associated data: comments, activity logs, queue items
+
+**Task Deletion Cascade:** When any task is deleted (manually, via "Delete all Done tasks", or auto-cleanup), all associated data is cascade deleted: comments, activity logs, and queue items.
 
 ### CLI Health Check
 
@@ -676,6 +730,8 @@ Periodically verifies CLI availability:
 ### Email Notifications
 
 Email notifications are sent via fire-and-forget async calls when events occur. This is not a separate background job - notifications are triggered inline but don't block the runner.
+
+**Failure Handling:** If Mailgun is misconfigured or the API call fails, the failure is silently logged to the application error log. There is no user-facing alert for notification failures.
 
 ## Technical Decisions
 
@@ -703,6 +759,81 @@ The application runs database migrations automatically on startup. If a migratio
 1. All IDs should be in nanoid format.
 2. The mock user ID is `000000000000000000000` (21 zeros, a valid nanoid).
 3. No explicit timeout for CLI execution - let the OS handle it. Users can manually kill loops if needed.
+
+## Implementation
+
+This section covers technical implementation details that will be expanded in the TECHNICAL_DESIGN document.
+
+### Tech Stack
+
+**Backend:**
+- TypeScript with Bun runtime
+- RESTful API
+- Background jobs (runner, cleanup, health check)
+- SSE endpoint for real-time updates
+- SQLite database
+
+**Frontend:**
+- TypeScript with React (via create-vite-app)
+- Bun as the build tool/runtime
+
+### Single Executable Distribution
+
+The goal is to distribute Malamar as a single executable binary.
+
+**Preferred approach:** Bundle the frontend build output directly into the Bun binary using `bun build --compile`, serving embedded static assets if supported.
+
+**Fallback approach:**
+1. Compress the UI dist into the binary
+2. On startup, decompress to `~/.malamar/ui/` (or similar)
+3. Serve static files from that location
+4. Overwrite on each startup to ensure UI matches the binary version
+
+### Configuration
+
+Configuration can be set via environment variables or CLI flags. Environment variables take priority over CLI flags.
+
+**Server:**
+| Setting | Env Var | CLI Flag | Default |
+|---------|---------|----------|---------|
+| Bind address | `MALAMAR_HOST` | `--host` | `127.0.0.1` |
+| Server port | `MALAMAR_PORT` | `--port` | `3456` |
+
+**Data & Storage:**
+| Setting | Env Var | CLI Flag | Default |
+|---------|---------|----------|---------|
+| Data directory | `MALAMAR_DATA_DIR` | `--data-dir` | `~/.malamar` |
+
+**Logging:**
+| Setting | Env Var | CLI Flag | Default |
+|---------|---------|----------|---------|
+| Log verbosity | `MALAMAR_LOG_LEVEL` | `--log-level` | `info` |
+| Output format | `MALAMAR_LOG_FORMAT` | `--log-format` | `text` |
+
+Log levels: `debug`, `info`, `warn`, `error`
+Log formats: `text`, `json`
+
+**Runner:**
+| Setting | Env Var | CLI Flag | Default |
+|---------|---------|----------|---------|
+| Poll interval (ms) | `MALAMAR_RUNNER_POLL_INTERVAL` | `--runner-poll-interval` | `1000` |
+
+**Temp Files:**
+| Setting | Env Var | CLI Flag | Default |
+|---------|---------|----------|---------|
+| Temp directory | `MALAMAR_TEMP_DIR` | `--temp-dir` | System `/tmp` |
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `malamar` | Start the server (default) |
+| `malamar version` | Show version info |
+| `malamar help` | Show help/usage |
+| `malamar doctor` | Check system health (CLIs, database, config) |
+| `malamar config` | Show current configuration |
+| `malamar export` | Export data (details TBD) |
+| `malamar import` | Import data (details TBD) |
 
 ## Aim Far
 
