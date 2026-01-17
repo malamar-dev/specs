@@ -109,6 +109,8 @@ For temp folder scenarios, agents learn which repositories or resources to work 
 
 **Working Directory Conflicts:** Malamar does not prevent multiple workspaces from using the same static directory path. Users are responsible for avoiding conflicts if they configure multiple workspaces to point at the same directory.
 
+**Mid-Flight Working Directory Changes:** If the working directory is changed (via Malamar agent action or manual UI) while a task is actively being processed, the currently running agent continues with the old directory. Subsequent agents in the loop pick up the new path. This is an accepted risk that applies to both Malamar agent actions and manual user changes.
+
 ### Agents
 
 Each agent has the instruction for example:
@@ -144,6 +146,13 @@ Each agent has its own nanoid. The default example agents (Planner, Implementer,
 
 Each agent has an `order` field that must be unique within the workspace. When reordering agents, the client/UI must send all the new valid ordering. The runner executes agents sequentially based on this order.
 
+#### Workspace With No Agents
+
+When a workspace has all its agents deleted, the system handles it gracefully:
+- Chats can still happen with the Malamar agent (to recreate agents)
+- Tasks would immediately move to "In Review" (no agents = all skip)
+- **UX:** A persistent, non-dismissable warning banner is displayed at the top of the workspace page when there are zero agents, until at least one agent is created.
+
 #### Agent Response Format
 
 When an agent finishes working on a task, it responds with a JSON structure containing one or more actions:
@@ -174,6 +183,8 @@ When an agent finishes working on a task, it responds with a JSON structure cont
 ### Tasks
 
 **Important:** When creating a task, users must include all context in the task's DESCRIPTION field. Comments are NOT for adding initial context - they are only used to steer agents during processing. The runner may pick up a task immediately after creation, so all necessary information must be in the description from the start.
+
+**Task Creation via Chat:** When an agent uses the `create_task` action from chat, the task is processed immediately with no delay or draft state. The agent creating the task should include all necessary context in the description, same as manually created tasks. All tasks follow the same loop starting from the first agent, regardless of origin (UI, Malamar agent action, or workspace agent action).
 
 Each task has the status, of:
 1. Todo: Default, when I just created the task.
@@ -264,6 +275,9 @@ Each chat belongs to a workspace and is associated with either a workspace agent
 **System messages** are used for:
 - Error information (e.g., "Error: CLI exited with code 1")
 - File attachment notifications (e.g., "User has uploaded /tmp/malamar_chat_{chat_id}_attachments/{filename}")
+- Agent switch notifications (e.g., "Changed agent from Planner to Malamar")
+
+**No Separate Activity Logs:** Chats do not have a separate activity log table like tasks do. The message history (including system messages) serves as the audit trail. Tasks need activity logs because comments are for collaboration, not system events. Chats blend both naturally in the message stream.
 
 #### Chat Actions
 
@@ -291,7 +305,11 @@ The `message` field is encouraged but not required. Actions are displayed as str
 - `reorder_agents` - Change execution order: `{ "type": "reorder_agents", "agent_ids": ["id1", "id2", "id3"] }`
 - `update_workspace` - Modify workspace settings: `{ "type": "update_workspace", "title?": "...", "description?": "...", ... }`
 
+**Note:** The `delete_workspace` action is intentionally excluded. Workspace deletion is highly destructive (cascades everything - agents, tasks, comments, chats) and requires explicit human confirmation (typing workspace name). The Malamar agent can create, modify, and organize, but destruction of top-level resources remains human-only.
+
 **Action Execution:** Actions are executed immediately when the agent responds - no confirmation step. If an action fails (e.g., duplicate agent name, invalid agent ID), a system message is added with the error details.
+
+**Reorder Agents Validation:** The `reorder_agents` action must include all valid agent IDs in the workspace. If the array is incomplete (missing some agent IDs) or contains invalid IDs, the entire action is rejected with a system message.
 
 #### Chat Processing
 
@@ -301,8 +319,10 @@ Chat processing is similar to task processing:
 2. Malamar collects all messages in the chat plus metadata (agent instruction, workspace context)
 3. Serialize into a markdown file at `/tmp/malamar_chat_{chat_id}.md`
 4. Instruct the CLI to read from it and respond in a format Malamar can parse
-5. CLI writes response to `/tmp/malamar_chat_{chat_id}_output.json`
+5. CLI writes response to `/tmp/malamar_chat_output_{random_nanoid}.json` (fresh file each processing)
 6. Malamar parses the response, executes any actions, and displays the message
+
+**Timeout:** There is no timeout consideration for chat processing. Cancellation is purely user-initiated via the stop button.
 
 **Working Directory:** The chat respects the workspace's working directory setting:
 - **Temp Folder mode**: Creates `/tmp/malamar_chat_{chat_id}` as the working directory
@@ -327,14 +347,19 @@ The Malamar agent is a special built-in agent that helps users manage their work
 - Answer questions about how to use Malamar
 - Help users write effective agent instructions
 
-**Instruction Source:** The Malamar agent's instruction is hardcoded in Malamar's codebase, with extra instructions pointing to a remote knowledge base URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/README.md`) for discovering best practices and documentation.
+**Instruction Source:** The Malamar agent's instruction is hardcoded in Malamar's codebase, with extra instructions pointing to a remote knowledge base URL (e.g., `https://github.com/malamar-dev/specs/blob/main/AGENTS/README.md`) for discovering best practices and documentation. The hardcoded instruction stays in sync with the binary - when Malamar is updated with new action types, users get new capabilities by updating the binary. The remote knowledge base handles evolving best practices separately.
+
+**Remote Knowledge Base Failures:** If the remote knowledge base URL is unreachable (network unavailable or URL returns an error), this is treated as a silent failure. The Malamar agent proceeds without the knowledge base.
 
 **Context File:** When chatting with any agent (including Malamar), a context file at `/tmp/malamar_chat_{chat_id}_context.md` contains:
 - Workspace settings (title, description, working directory, cleanup settings, notifications)
 - All agents with their IDs and instructions (ordered), e.g., "Planner (id: 123456abcdef)"
-- Global settings (available CLIs and their health status, Mailgun configuration status)
+- Global settings (available CLIs and their health status)
+- Mailgun configuration status (configured/not configured) - enables agents to warn users about missing setup without exposing credentials
 
 The agent is instructed to read this file ONLY when needed. Task summaries are NOT included.
+
+**Note on Agent IDs:** Agent IDs are included in chat context files because agents can perform structured actions requiring IDs. Task input files use names-only since task agents communicate through comments (human-readable) and have no actions requiring IDs.
 
 #### File Attachments
 
@@ -349,7 +374,7 @@ Users can upload files into a chat:
 
 **Duplicate filenames:** Overwrites the existing file (no delete attachment functionality).
 
-**Cleanup:** Attachment directories are left for the OS to clean up naturally via `/tmp` cleanup, consistent with other temp files.
+**Cleanup:** Attachment directories are left for the OS to clean up naturally via `/tmp` cleanup, consistent with other temp files. Malamar does not proactively clean up its own temp files - OS-dependent `/tmp` cleanup is acceptable. Users needing control can use `MALAMAR_TEMP_DIR` to manage their own temp directory.
 
 #### Chat and Agent Deletion
 
@@ -358,6 +383,8 @@ Users can upload files into a chat:
 **When a chat is deleted:** Simple confirm popup. The chat and all messages are deleted. Attachment directory is left for OS cleanup.
 
 **When a workspace is deleted:** All chats and chat messages are cascade deleted.
+
+**Chat Persistence:** Chats persist indefinitely until manually deleted. There is no auto-cleanup for old or inactive chats given the lightweight nature of chat data. Chats use implicit ordering (recently active at top) - old chats naturally sink and users can delete when no longer needed.
 
 ### Task Router/Runner
 
@@ -541,6 +568,10 @@ Each CLI has a settings section in the CLI Settings page:
 
 **Status Simplification:** CLI status is simplified to two states: "Healthy" (CLI is available and working) and "Unhealthy" (CLI is not found or test failed). The optional error message field provides more detail for troubleshooting.
 
+**Refresh CLI Status Button:** A "Refresh CLI Status" button is available on the CLI Settings page for immediate re-detection after installing a new CLI. This gives users immediate feedback while the 5-minute periodic check continues handling background changes.
+
+**CLI Command Templates:** CLI command templates are intentionally locked down for stability. Users can customize binary paths and environment variables via CLI Settings, but not the command templates themselves. CLI adapters are hardcoded.
+
 ### CLI Unavailability Warnings
 
 When an assigned CLI becomes unavailable, warnings are displayed on:
@@ -645,6 +676,7 @@ Clicking a chat opens a popup with:
 - Changing agent → auto-updates CLI dropdown to match that agent's configured CLI (sets `cli_type` to NULL)
 - Manually changing CLI → saves `cli_type` override to the chat
 - Changing the agent does NOT affect conversation history - only future messages use the new agent
+- When a user switches agents mid-conversation, a system message is added: "Changed agent from {old_agent} to {new_agent}". Important: Only user messages trigger CLI responses - system messages NEVER trigger the agent to respond.
 
 **Processing Indicator:**
 While a chat is processing:
@@ -726,6 +758,8 @@ Payloads are self-contained for toast display - no refetch needed for the notifi
 
 **Task Created via Chat:** When an agent uses the `create_task` action from chat, a `task.created` SSE event is emitted. The UI shows a toast notification with a clickable link to open the newly created task.
 
+**Broadcasting Scope:** SSE events are broadcast to all connected clients without workspace scoping. Client-side filtering handles noise if needed. Workspace-scoped broadcasting will be revisited when adding multi-user authentication.
+
 ## Notifications
 
 Malamar can send email notifications via Mailgun API when certain events occur.
@@ -749,6 +783,8 @@ Users can enable/disable notifications per event type in the settings page:
 
 1. **On error occurred**: Enabled by default
 2. **On task moved to in review**: Enabled by default
+
+**Note:** Notifications are for task-related events only. Chat errors do not trigger email notifications because chat is interactive and errors are immediately visible as system messages in the UI. Tasks are autonomous where the user might be away.
 
 ### Settings Scope
 

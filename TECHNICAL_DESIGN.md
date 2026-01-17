@@ -204,6 +204,8 @@ Before executing each agent:
 2. Fetch agent data (instruction, name, CLI) right before execution
 3. Changes to agents take effect immediately for subsequent agents
 
+**Mid-Flight Changes:** If workspace settings (like working directory) are changed while a task is actively being processed, the currently running agent continues with the old settings. Subsequent agents in the loop pick up the new settings. This is an accepted risk that applies to both Malamar agent actions and manual user changes.
+
 #### Loop Flow
 
 ```
@@ -221,6 +223,8 @@ Before executing each agent:
    - If any comment added: retrigger loop from first agent
    - If all skipped: move task to "In Review"
 ```
+
+**Workspace With No Agents:** When a workspace has zero agents, tasks immediately move to "In Review" (no agents = all skip). Chats can still happen with the Malamar agent to recreate agents.
 
 #### Error Handling
 
@@ -251,6 +255,8 @@ Runs every 5 minutes:
 3. Verify successful exit with non-empty output
 4. Update in-memory status ("Healthy" or "Unhealthy")
 
+**Manual Refresh:** Users can trigger immediate CLI re-detection via the "Refresh CLI Status" button on the CLI Settings page (calls `POST /api/health/cli/refresh`). This gives immediate feedback after installing new CLIs, while the periodic check handles background changes.
+
 ---
 
 ## External Integrations
@@ -261,6 +267,8 @@ Each supported CLI has an adapter with:
 - Command template
 - Supported flags
 - Response format enforcement method
+
+**Locked Down Templates:** CLI command templates are intentionally locked down for stability. Users can customize binary paths and environment variables via CLI Settings, but not the command templates themselves. CLI adapters are hardcoded.
 
 #### CLI Invocation
 
@@ -388,7 +396,8 @@ Write your response as JSON to: /tmp/malamar_chat_abc123_output.json
 **Format Notes:**
 - Conversation history in JSONL format (one JSON per line) inside code block
 - All messages included (user, agent, and system) in ASC order
-- System messages contain error info and file attachment notifications
+- System messages contain error info, file attachment notifications, and agent switch notifications (e.g., "Changed agent from Planner to Malamar")
+- Only user messages trigger CLI responses - system messages NEVER trigger the agent to respond
 
 #### Chat Context File
 
@@ -397,13 +406,16 @@ Location: `/tmp/malamar_chat_{chat_id}_context.md` (separate file for workspace 
 This file is referenced in the input file but agents read it only when needed. Contains:
 - Workspace settings (title, description, working directory, cleanup settings, notifications)
 - All agents with their IDs and instructions (ordered), e.g., "Planner (id: 123456abcdef)"
-- Global settings (available CLIs and their health status, Mailgun configuration status)
+- Global settings (available CLIs and their health status)
+- Mailgun configuration status (configured/not configured) - enables agents to warn users about missing setup without exposing credentials
 
 Task summaries are NOT included.
 
+**Note on Agent IDs:** Agent IDs are included in chat context files because agents can perform structured actions requiring IDs. Task input files use names-only since task agents communicate through comments (human-readable) and have no actions requiring IDs.
+
 #### Chat Output File
 
-Location: `/tmp/malamar_chat_{chat_id}_output.json`
+Location: `/tmp/malamar_chat_output_{random_nanoid}.json` (fresh file each processing)
 
 ```json
 {
@@ -417,6 +429,11 @@ Location: `/tmp/malamar_chat_{chat_id}_output.json`
 **Format Notes:**
 - `message` field is optional but encouraged
 - `actions` array is optional; if present, each action is executed immediately
+- Uses random nanoid (not chat_id) to prevent the dangerous scenario where a failed CLI run leaves the previous output file intact, causing Malamar to parse stale data and potentially duplicate messages or actions
+
+**File Pattern Summary:**
+- Chat input: `/tmp/malamar_chat_{chat_id}.md` (reused per chat)
+- Chat output: `/tmp/malamar_chat_output_{random_nanoid}.json` (fresh each processing)
 
 #### Chat Working Directory
 
@@ -426,6 +443,8 @@ The chat CLI is invoked with a working directory that respects the workspace set
 - **Static Directory mode**: The path configured in workspace settings
 
 This allows chat agents to have full access to the workspace's working environment (e.g., browse repository files, run commands, make changes).
+
+**Timeout:** There is no timeout consideration for chat processing. Cancellation is purely user-initiated via the stop button in the chat UI.
 
 #### Chat Attachments
 
@@ -507,6 +526,7 @@ Email notifications are sent via fire-and-forget async calls. No separate backgr
 #### Health
 - `GET /api/health` - Overall health status
 - `GET /api/health/cli` - CLI availability status
+- `POST /api/health/cli/refresh` - Manually trigger CLI re-detection (for "Refresh CLI Status" button)
 
 ### Real-Time Updates
 
@@ -551,6 +571,8 @@ data: {"chat_id": "xxx", "chat_title": "...", "agent_name": "Malamar", "workspac
 Backend uses in-process pub/sub event emitter to fan out to connected clients.
 
 **Task Created via Chat:** The `task.created` event is emitted when an agent uses the `create_task` action from chat. The UI shows a toast with a clickable link to the new task.
+
+**Broadcasting Scope:** SSE events are broadcast to all connected clients without workspace scoping. Client-side filtering handles noise if needed. Workspace-scoped broadcasting will be revisited when adding multi-user authentication.
 
 ### Single Executable Distribution
 
@@ -604,6 +626,8 @@ Log formats: `text`, `json`
 | Setting | Env Var | CLI Flag | Default |
 |---------|---------|----------|---------|
 | Temp directory | `MALAMAR_TEMP_DIR` | `--temp-dir` | System `/tmp` |
+
+**Cleanup Policy:** Malamar does not proactively clean up its own temp files. OS-dependent `/tmp` cleanup is acceptable. Users needing control can use `MALAMAR_TEMP_DIR` to manage their own temp directory.
 
 ### CLI Commands
 
