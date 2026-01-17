@@ -1,111 +1,103 @@
 ---
 name: explore-specs
-description: Working along with Irving Dinh on clarifying, exploring and extending the specs of Malamar.
+description: A dedicated workflow for Irving Dinh and Claude Code to clarify, explore, and extend the Malamar project specifications.
 ---
 
 # Explore Specs
 
-A collaborative workflow to clarify, explore, and extend ideas in the project specification through a Q&A session.
+A collaborative workflow to clarify, explore, and extend ideas in the project specification through a structured Q&A session.
 
 ## Workflow
 
-1. **Read all context**
-   - Read `README.md` for project overview and document navigation
-   - Read `SPECS.md` for product specifications (what and why)
-   - Read `TECHNICAL_DESIGN.md` for technical implementation details (how)
-   - Read all files in `MEETING-MINUTES/` folder to understand previous discussions
+### 1. Read All Context
 
-2. **Ask questions one by one**
-   - Identify areas that are unclear, incomplete, or worth exploring
-   - Ask ONE question at a time, wait for the user's answer
-   - Build on previous answers to go deeper or explore related topics
-   - Keep the conversation open-ended - explore whatever seems interesting or important
+- Read `README.md` for project overview and document navigation
+- Read `SPECS.md` for product specifications (what and why)
+- Read `TECHNICAL_DESIGN.md` for technical implementation details (how)
+- Read all files in `MEETING-MINUTES/` folder to understand previous discussions
 
-3. **Provide suggested answers and AI perspective**
-   - For each question, provide a **suggested answer** based on patterns and decisions from previous sessions
-   - Include an **AI perspective** section with:
-     - Judgment on how this aligns with established design principles
-     - Potential trade-offs or considerations
-     - Recommendation if applicable
-   - This helps the user quickly confirm or refine, avoiding redundant discussions
+### 2. Ask Questions
 
-4. **Avoid redundant questions**
-   - Before asking, check if similar topics were already covered in previous sessions
-   - Reference relevant past decisions when building on established patterns
-   - If a question feels redundant, skip it or reframe to explore a genuinely new angle
+Ask ONE question at a time, wait for the user's answer, then continue. Go deep into each topic before switching to another.
 
-5. **Detect session completion**
-   - When questions start to feel exhausted or no new topics are emerging, ask the user: "I think we've covered the main topics. Should we wrap up this session, or is there anything else you'd like to explore?"
-   - If the user says done/that's all/wrap up, proceed to save
+**Topic Priority (in order):**
 
-6. **Save the session**
-   - Determine the next session number by checking existing files in `MEETING-MINUTES/`
-   - Create `MEETING-MINUTES/SESSION-XXX.md` with the polished Q&A conversation
-   - Format: Use topic headers (`## Topic`), Q&A pairs separated by `---`, support structured answers with bullet points/code blocks where appropriate
-   - Notify the user that the session has been saved
+1. If the user mentions a topic at the start, stick with it
+2. Identify un-completed topics from previous sessions (by judgment - topics that didn't go deep enough)
+3. Identify gaps or unclear areas in SPECS.md and TECHNICAL_DESIGN.md
+4. Randomly and creatively explore topics
 
-## Q&A Format During Session
+**Question Format:**
 
-```markdown
-**Q: [The question]?**
+Every question must follow this format:
 
-**Suggested Answer:** Based on [previous decision/pattern], the answer would likely be [X] because [reasoning].
-
-**AI Perspective:** [Judgment on alignment with design principles, trade-offs, recommendation]
-
+```
 ---
 
-User responds, AI acknowledges and moves to next question.
+Question #N: [Question title]
+
+[Detailed question body - can include markdown formatting, code blocks, ASCII diagrams, etc.]
+
+*Rationale: [Why this question matters and why it hasn't been answered already. This justifies whether the question is worth asking.]*
+
+Suggestions:
+A. [Option name] (Recommended): [Explanation with specific source citations, e.g., "based on Section 2.3 of SPECS.md", "based on Question #5 of SESSION-003.md", "based on the Button component docs from shadcn/ui"]
+B. [Option name]: [Explanation with specific source citations]
+C. [Option name]: [Explanation with specific source citations]
+D. Other: [Invite the user to provide their own answer]
 ```
 
-## Q&A Format for Session File
+**Question Guidelines:**
+
+- Always include specific section/point references when citing sources (SPECS.md, TECHNICAL_DESIGN.md, previous sessions)
+- Actively fetch external documentation (React docs, shadcn/ui, etc.) to ensure suggestions are accurate and current
+- Only mark a suggestion as "(Recommended)" when there's clear alignment with existing specs or previous decisions
+- Always include an "Other" option for custom answers
+- Use however many suggestions make sense for the question (no fixed minimum/maximum)
+
+### 3. Detect Session Completion
+
+The session is ready to wrap up when:
+
+- All identified topics have been explored deeply
+- The number of questions is around 20 or more (guideline, not hard rule)
+
+When these conditions are met, ask the user: "I think we've covered the main topics. Should we wrap up this session, or is there anything else you'd like to explore?"
+
+If the user says done/that's all/wrap up, proceed to save.
+
+### 4. Save the Session
+
+**Determine the next session number** by checking existing files in `MEETING-MINUTES/`.
+
+**Create `MEETING-MINUTES/SESSION-XXX.md`** with the following format:
 
 ```markdown
 # Session XXX
 
-## Topic Name
+Please read [SKILL.md](../.claude/skills/explore-specs/SKILL.md) to understand the process used to create this file.
 
-Q: The question asked?
+## Question #1
 
-A: The user's answer, potentially with:
-- Bullet points
-- Code blocks
-- Multi-line explanations
+[Full question with all markdown formatting, code blocks, ASCII diagrams, etc.]
 
----
+### Answer
 
-Q: Next question?
+[Full answer with all markdown formatting, code blocks, ASCII diagrams, etc.]
 
-A: Next answer.
+## Question #2
+
+[...]
+
+### Answer
+
+[...]
 ```
 
-## Key Design Principles (from previous sessions)
+**Answer Guidelines:**
 
-Reference these when formulating suggested answers:
+- Rephrase for clarity (spelling, grammar, structure) but never lose information
+- When the user gives a brief confirmation (e.g., "correct", "yes") to a detailed question, expand the answer to incorporate the reasoning and context from the question so the answer stands on its own
+- Preserve all details, decisions, trade-offs, and rationale from the conversation
 
-1. **User responsibility over guardrails**: Malamar provides mechanics; users define behavior via instructions. Conflicts, quality, and edge cases are user's responsibility.
-
-2. **Accept risk, keep it simple**: No artificial limits (file sizes, timeouts, iteration caps). Let OS handle cleanup. Trust the user.
-
-3. **Silent failures for non-critical paths**: Network issues fetching knowledge base, notification delivery failures - log but don't surface to user.
-
-4. **Reject invalid actions entirely**: For structured actions (reorder_agents, etc.), validate completely or reject with error - no partial application.
-
-5. **Just-in-time snapshots**: Changes take effect for subsequent operations, not currently running ones.
-
-6. **Cascade delete, no orphans**: When deleting entities, cascade all related data.
-
-7. **No authentication for now**: Local-first, Tailscale for remote access.
-
-8. **Domain agnostic**: Malamar is pure orchestration - no opinions on git workflows, code quality, or domain-specific behavior.
-
-## Tips for Good Questions
-
-- Start broad, then drill into specifics based on answers
-- Ask about edge cases and error scenarios
-- Explore relationships between entities
-- Clarify ambiguous terminology
-- Ask about technical decisions and their rationale
-- Explore what happens when things go wrong
-- Ask about future extensibility when relevant
-- Check previous sessions before asking to avoid redundancy
+**Notify the user** that the session has been saved.
