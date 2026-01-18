@@ -18,6 +18,14 @@ The actual source code lives at: [malamar-dev/malamar](https://github.com/malama
 | [AGENTS/](./AGENTS/) | Knowledge base for the Malamar agent |
 | [APPENDIX_ONBOARDING_RESOURCES.md](./APPENDIX_ONBOARDING_RESOURCES.md) | Resources created on first startup |
 
+## Specialized Meeting Minutes
+
+Some meeting minute sessions are too detailed or task-specific to be reflected in SPECS.md or TECHNICAL_DESIGN.md. These sessions focus deeply on implementation details for specific development phases. Read them when working on the related area.
+
+| Session | Focus | When to Read |
+|---------|-------|--------------|
+| [SESSION-012](./MEETING-MINUTES/SESSION-012.md) | Backend repository structure | When setting up the backend codebase, understanding folder organization, module patterns, testing strategy, or development tooling |
+
 ## Writing Tips
 
 When updating documentation in this repository:
