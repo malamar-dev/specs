@@ -13,10 +13,24 @@ A collaborative workflow to clarify, explore, and extend ideas in the project sp
 
 - Read `README.md` for project overview and document navigation
 - Read `SPECS.md` for product specifications (what and why)
-- Read `TECHNICAL_DESIGN.md` for technical implementation details (how)
-- Read all files in `MEETING-MINUTES/` folder to understand previous discussions
+- Read `TECHNICAL_DESIGN.md` for architectural overview, key decisions, and cross-cutting concerns
+- Read detailed technical design files as needed:
+  - `TECHNICAL_DESIGN_DATA.md` - Database schemas, entity relationships
+  - `TECHNICAL_DESIGN_RUNTIME.md` - Runner logic, queue mechanics, CLI adapters
+  - `TECHNICAL_DESIGN_API.md` - REST endpoints, SSE events
+  - `TECHNICAL_DESIGN_UX.md` - User flows, interactions, mockups
+  - `TECHNICAL_DESIGN_UI.md` - React implementation details
 
-### 2. Ask Questions
+### 2. Load Meeting Minutes Context
+
+Spawn the `meeting-minutes-recall` agent (via Task tool with `subagent_type: "meeting-minutes-recall"`) in **proactive mode** to surface relevant past discussions. This offloads context to the subagent instead of loading all meeting minutes directly.
+
+When spawning, tell the agent what topic area you're about to explore so it can surface:
+- Key decisions relevant to the topic
+- Potential conflicts with past decisions
+- Gaps (topics never discussed that might need exploration)
+
+### 3. Ask Questions
 
 Ask ONE question at a time, wait for the user's answer, then continue. Go deep into each topic before switching to another.
 
@@ -24,7 +38,7 @@ Ask ONE question at a time, wait for the user's answer, then continue. Go deep i
 
 1. If the user mentions a topic at the start, stick with it
 2. Identify un-completed topics from previous sessions (by judgment - topics that didn't go deep enough)
-3. Identify gaps or unclear areas in SPECS.md and TECHNICAL_DESIGN.md
+3. Identify gaps or unclear areas in SPECS.md and TECHNICAL_DESIGN*.md files
 4. Randomly and creatively explore topics
 
 **Question Format:**
@@ -49,13 +63,13 @@ D. Other: [Invite the user to provide their own answer]
 
 **Question Guidelines:**
 
-- Always include specific section/point references when citing sources (SPECS.md, TECHNICAL_DESIGN.md, previous sessions)
+- Always include specific section/point references when citing sources (SPECS.md, TECHNICAL_DESIGN*.md files, previous sessions)
 - Actively fetch external documentation (React docs, shadcn/ui, etc.) to ensure suggestions are accurate and current
 - Only mark a suggestion as "(Recommended)" when there's clear alignment with existing specs or previous decisions
 - Always include an "Other" option for custom answers
 - Use however many suggestions make sense for the question (no fixed minimum/maximum)
 
-### 3. Detect Session Completion
+### 4. Detect Session Completion
 
 The session is ready to wrap up when:
 
@@ -66,7 +80,7 @@ When these conditions are met, ask the user: "I think we've covered the main top
 
 If the user says done/that's all/wrap up, proceed to save.
 
-### 4. Save the Session
+### 5. Save the Session
 
 **Determine the next session number** by checking existing files in `MEETING-MINUTES/`.
 

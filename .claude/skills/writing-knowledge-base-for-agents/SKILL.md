@@ -92,11 +92,17 @@ Follow this workflow for both **creating new files** and **updating existing fil
 
 Before writing anything, read the latest source documents to ensure you have current knowledge:
 
-1. Read `README.md` for project overview
-2. Read `SPECS.md` for product specifications
-3. Read `TECHNICAL_DESIGN.md` for technical details
-4. Read all files in `MEETING-MINUTES/` for recent decisions
-5. Read existing `AGENTS/` content (if updating or adding related content)
+1. Read `README.md` for project overview and document navigation
+2. Read `SPECS.md` for product specifications (what and why)
+3. Read `TECHNICAL_DESIGN.md` for architectural overview, key decisions, and cross-cutting concerns
+4. Read detailed technical design files as needed:
+   - `TECHNICAL_DESIGN_DATA.md` - Database schemas, entity relationships
+   - `TECHNICAL_DESIGN_RUNTIME.md` - Runner logic, queue mechanics, CLI adapters
+   - `TECHNICAL_DESIGN_API.md` - REST endpoints, SSE events
+   - `TECHNICAL_DESIGN_UX.md` - User flows, interactions, mockups
+   - `TECHNICAL_DESIGN_UI.md` - React implementation details
+5. Read all files in `MEETING-MINUTES/` for recent decisions
+6. Read existing `AGENTS/` content (if updating or adding related content)
 
 **Important**: Always do this, even for small updates. The specs may have changed since the AGENTS/ content was last written.
 
@@ -115,7 +121,7 @@ Create or modify the content following the Content Principles above:
 After writing, spawn a subagent to fact-check the **entire file** - even if you only changed one line or one character.
 
 **Fact-check scope**:
-1. Verify against source docs (SPECS.md, TECHNICAL_DESIGN.md, MEETING-MINUTES/)
+1. Verify against source docs (SPECS.md, TECHNICAL_DESIGN*.md files, MEETING-MINUTES/)
 2. Verify against other AGENTS/ files for cross-file consistency
 
 **Fact-check behavior**:
@@ -166,13 +172,13 @@ The `AGENTS/` knowledge base should **not** include:
 - Configuration options (environment variables, CLI flags)
 - UI implementation details
 
-These belong in `SPECS.md` and `TECHNICAL_DESIGN.md`. The `AGENTS/` knowledge base focuses on **how to use Malamar effectively**, not how Malamar is built.
+These belong in `SPECS.md` and the `TECHNICAL_DESIGN*.md` files. The `AGENTS/` knowledge base focuses on **how to use Malamar effectively**, not how Malamar is built.
 
 ## Summary Checklist
 
 Before finalizing any AGENTS/ content:
 
-- [ ] Read latest README.md, SPECS.md, TECHNICAL_DESIGN.md, MEETING-MINUTES/
+- [ ] Read latest README.md, SPECS.md, TECHNICAL_DESIGN*.md files, MEETING-MINUTES/
 - [ ] Content is standalone (no external references required)
 - [ ] Content is practical with examples
 - [ ] Format uses headers, code blocks, "When X, do Y" patterns
