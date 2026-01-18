@@ -340,19 +340,3 @@ A review of SPECS.md and TECHNICAL_DESIGN.md identified several issues.
 | Date/time display format | Not documented |
 
 **Next steps:** Update documents with all decisions from this session (to be done in a subsequent action).
-
----
-
-## Post-Session Notes
-
-### Note 1: `task.created` SSE Event Removed
-
-The `task.created` SSE event was originally designed for the `create_task` chat action (agents creating tasks via chat). Since the `create_task` action was removed in SESSION-009 Q#34-35, the `task.created` event has no purpose and has been removed from TECHNICAL_DESIGN.md entirely.
-
-### Note 2: Search Feature Requires API Design
-
-The basic search functionality added in this session (Q#7) affects the API design:
-- Workspace list search needs a query parameter on `GET /api/workspaces`
-- Chat list search needs a query parameter on `GET /api/workspaces/:id/chats`
-
-**Action required:** Clarify the search API design in a later session and update the API endpoints section in TECHNICAL_DESIGN.md accordingly.

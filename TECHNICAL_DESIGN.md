@@ -22,10 +22,11 @@ This document covers the technical implementation details for Malamar. For produ
 
 **Backend:**
 - TypeScript with Bun runtime
+- Hono web framework with Zod validation
 - RESTful API
 - Background jobs (runner, cleanup, health check)
 - SSE endpoint for real-time updates
-- SQLite database
+- SQLite database with WAL mode
 
 **Frontend:**
 - TypeScript with React (via create-vite-app)
@@ -55,17 +56,40 @@ No external dependencies (Redis, external databases, message queues) are require
 
 Malamar uses SQLite as its database, stored at `~/.malamar/malamar.db` (configurable via `MALAMAR_DATA_DIR`).
 
+**SQLite Configuration:**
+
+Use Bun's built-in `bun:sqlite` with a single `Database` instance shared across the application. On startup, configure with:
+
+- `PRAGMA journal_mode = WAL;` (better concurrent read performance)
+- `PRAGMA synchronous = NORMAL;` (safe for WAL, better performance than FULL)
+- `PRAGMA busy_timeout = 5000;` (5 second wait on lock contention)
+
+Single-user + single-process means connection pooling is unnecessary. Bun's SQLite handles concurrent reads naturally with WAL. Writes are serialized by SQLite automatically. Use transactions for multi-step operations (e.g., create task + queue item + activity log).
+
 ### Database Migrations
 
-- Migrations run automatically on startup
-- Application panics on migration failure to ensure data consistency
-- Users should backup `~/.malamar` before major updates
-- No automatic rollback - manual restore from backup if needed
-- Simple approach appropriate for local-first single-user app
+Sequential numbered SQL files bundled into the Bun binary:
+
+- Store migrations as embedded files in the binary
+- Naming: `001_initial_schema.sql`, `002_add_chat_tables.sql`, etc.
+- Track applied migrations in a `_migrations` table: `(version INTEGER PRIMARY KEY, applied_at DATETIME)`
+- On startup:
+  1. Create `_migrations` table if not exists
+  2. Get max applied version
+  3. Run all migrations with version > max, in order
+  4. If any migration fails, panic with error message
+- Each migration file contains raw SQL statements separated by `;`
+- No rollback support (manual restore from backup)
 
 ### ID Generation
 
-All IDs use nanoid format. The mock user ID is `000000000000000000000` (21 zeros, a valid nanoid).
+Use `nanoid()` with default settings:
+- 21 characters, alphabet `A-Za-z0-9_-`
+- URL-safe for use in API paths like `/api/tasks/:id`
+- Sufficient collision resistance for single-user app (and future multi-user)
+- Use the `nanoid` npm package
+
+The mock user ID is `000000000000000000000` (21 zeros, a valid nanoid).
 
 ### Entity Schemas
 
@@ -141,6 +165,21 @@ task_logs
 ├── metadata: json
 ├── created_at: datetime
 ```
+
+**Activity Log Event Types:**
+
+| Event Type | Actor Type | Metadata |
+|------------|------------|----------|
+| `task_created` | user | - |
+| `status_changed` | user/agent/system | `{ old_status, new_status }` |
+| `comment_added` | user/agent/system | - |
+| `agent_started` | agent | `{ agent_name }` |
+| `agent_finished` | agent | `{ agent_name, action_type }` where action_type is "skip", "comment", or "in_review" |
+| `task_cancelled` | user | - |
+| `task_prioritized` | user | - |
+| `task_deprioritized` | user | - |
+
+Note: `comment_added` doesn't include comment content (that's in the comments table). `agent_finished` includes action summary so the log is meaningful standalone.
 
 #### Task Event Queue
 
@@ -228,10 +267,31 @@ The runner is the main background job that processes tasks. It runs as a continu
 
 ### Concurrent Workers
 
-- Each workspace has its own worker that handles queue pickup and agent loops
-- Multiple workspaces can process tasks simultaneously
-- Within a workspace, only one task is processed at a time
-- No artificial limit on concurrent workspace workers
+Single polling loop with dynamic worker spawning:
+
+1. One main runner loop polls every `MALAMAR_RUNNER_POLL_INTERVAL` (default 1000ms)
+2. Query for all workspaces with `queued` queue items (respecting the pickup algorithm)
+3. For each workspace with work AND no active worker, spawn an async worker function
+4. Track active workers in a `Set<string>` (workspace IDs currently processing)
+5. Worker function processes the task loop, removes itself from the Set when done
+
+No artificial limit on concurrent workers. Workers are async functions, not separate threads/processes - leveraging Bun's event loop.
+
+### Queue Item Creation Triggers
+
+**Create new queue item (status: `queued`):**
+- Task created (via API) → create queue item
+- Task moved from Done/In Review to Todo (via API) → create queue item
+
+**Create or update queue item on comment:**
+- Any comment added (user/agent/system) to a task → create queue item or update `updated_at` on existing `queued` item
+- Exception: If task is in "Done" status, no queue item is created
+
+**Update existing queue item (`updated_at` bump):**
+- If a `queued` item already exists for that task, don't create duplicate - just update `updated_at`
+
+**Create queue item from system comment (error retry):**
+- System comment added (error case) → create/update queue item
 
 ### Queue Pickup Algorithm
 
@@ -273,18 +333,40 @@ Before executing each agent:
 
 ### Error Handling
 
-On CLI execution failure, timeout, or malformed output:
-1. Write System comment with error details
-2. Stop current loop
-3. System comment emits task event → new queue item
-4. Task stays in current status (no move to "In Review")
-5. Natural retry via queue (no explicit backoff)
+After subprocess exits, check in this order:
+
+1. **Exit code non-zero**: System comment "CLI exited with code {code}. {stderr if available}"
+2. **Output file missing**: System comment "CLI completed but output file was not created at {path}"
+3. **Output file empty**: System comment "CLI completed but output file was empty"
+4. **JSON parse failure**: System comment "CLI output was not valid JSON: {parse error}"
+5. **Schema validation failure**: System comment "CLI output structure was invalid: {validation error}"
+6. **Success**: Parse actions and execute
+
+All error cases trigger the standard error flow:
+- Write System comment with error details
+- Stop current loop
+- System comment emits task event → new queue item
+- Task stays in current status (no move to "In Review")
+- Natural retry via queue (no explicit backoff)
 
 **CLI Becomes Unhealthy Mid-Task:**
 - No pre-check of CLI health before invocation - just try to run it
 - If CLI fails, normal error handling kicks in (system comment, retry via queue)
 - If CLI stays unhealthy, task keeps retrying with accumulating error comments
 - User sees errors and can fix the CLI or reassign agent to a different CLI
+
+### Subprocess Management
+
+Maintain in-memory Maps for subprocess tracking:
+- `Map<string, Subprocess>` keyed by task ID for task processing
+- `Map<string, Subprocess>` keyed by chat ID for chat processing
+
+When cancellation is requested:
+1. Look up the subprocess in the map
+2. Call `subprocess.kill()` (Bun's subprocess API)
+3. Remove from map after process exits
+
+For workspace deletion: iterate all maps, find entries matching the workspace, kill those subprocesses first, then proceed with cascade delete.
 
 ### Task Cancellation
 
@@ -317,6 +399,34 @@ On startup:
 - Tasks stay "In Progress" status, just re-queued for processing
 - Clean crash recovery without special logic
 
+### Graceful Shutdown
+
+Signal handler with subprocess cleanup:
+
+1. Register handlers for `SIGTERM` and `SIGINT`
+2. On signal:
+   - Stop accepting new queue pickups (set a shutdown flag)
+   - Kill all active CLI subprocesses (iterate the subprocess maps)
+   - Wait briefly (e.g., 1 second) for subprocesses to exit
+   - Close SSE connections (clients will auto-reconnect, see server gone)
+   - Close database connection (SQLite WAL will checkpoint automatically)
+   - Exit process
+3. No need to update queue items - startup recovery handles `in_progress` items by resetting them to `queued`
+
+### Workspace Activity Tracking
+
+When any activity occurs (task created, comment added, status changed, agent execution, etc.), include a workspace `last_activity_at` update in the same database transaction:
+
+```sql
+-- Example: Creating a task transaction includes:
+INSERT INTO tasks ...
+INSERT INTO task_queue ...
+INSERT INTO task_logs ...
+UPDATE workspaces SET last_activity_at = NOW() WHERE id = ?
+```
+
+Simple, consistent, no eventual consistency issues. Small overhead per operation (one extra UPDATE).
+
 ---
 
 ## CLI Adapters
@@ -332,18 +442,42 @@ Each supported CLI has an adapter with:
 
 ### CLI Invocation
 
+**Claude Code** (supports JSON schema):
 ```shell
-# Claude Code (supports JSON schema)
 claude --dangerously-skip-permissions \
-  --json-schema '{"type":"object",...}' \
   --output-format json \
-  --prompt "Read the file at /tmp/malamar_task_xxx.md and follow the instruction autonomously."
-
-# Other CLIs (schema in prompt)
-gemini --prompt "Read the file at /tmp/malamar_task_xxx.md and follow the instruction autonomously."
+  --json-schema '{...schema...}' \
+  --prompt "Read the file at {input_path} and follow the instruction autonomously."
 ```
 
-Environment variables from CLI settings are injected into the subprocess environment.
+**Gemini CLI** (schema in prompt):
+```shell
+gemini --prompt "Read the file at {input_path} and follow the instruction autonomously."
+```
+
+**Codex CLI** (schema in prompt):
+```shell
+codex --prompt "Read the file at {input_path} and follow the instruction autonomously."
+```
+
+**OpenCode** (schema in prompt):
+```shell
+opencode --prompt "Read the file at {input_path} and follow the instruction autonomously."
+```
+
+For CLIs without `--json-schema`, embed the JSON format instruction at the end of the input file's "Output Instruction" section. All CLIs use `cwd` option set to the working directory.
+
+**Environment Variable Injection:**
+
+Inherit system env + override with user settings:
+
+- Start with `process.env` (inherit all system environment variables)
+- Merge in user-configured env vars from CLI settings (user values override system values if same key)
+- Pass merged env to `Bun.spawn()` via the `env` option
+- Example: If system has `PATH=/usr/bin` and user configures `ANTHROPIC_API_KEY=xxx`, CLI gets both
+- If user configures `PATH=/custom/path`, it overrides system PATH
+
+This ensures CLIs work correctly (they often need PATH, HOME, etc.) while allowing user customization.
 
 ### Response Format Enforcement
 
@@ -504,6 +638,21 @@ The chat CLI is invoked with a working directory that respects the workspace set
 
 This allows chat agents to have full access to the workspace's working environment (e.g., browse repository files, run commands, make changes).
 
+### Task Working Directory Management
+
+**Temp Folder mode:**
+- Directory path: `/tmp/malamar_task_{task_id}` (using configured temp dir)
+- Create directory when the first agent for that task is about to execute
+- If directory already exists (from previous loop), reuse it
+- No automatic cleanup (let OS handle `/tmp`)
+
+**Static Directory mode:**
+- Use the path from workspace settings as-is
+- Don't create it if it doesn't exist (user's responsibility)
+- Log warning if directory doesn't exist at execution time
+
+Pass the directory as `cwd` to `Bun.spawn()`.
+
 **Timeout:** There is no timeout consideration for chat processing. Cancellation is purely user-initiated via the stop button in the chat UI.
 
 ### Chat Attachments
@@ -522,6 +671,39 @@ Location: `/tmp/malamar_chat_{chat_id}_attachments/{filename}`
 - `rename_chat` action available to agents on first response only
 - After first agent response, `rename_chat` action becomes unavailable
 - User can edit title anytime via UI
+
+**Enforcing First Response Only:**
+
+When processing chat output actions, before executing `rename_chat`:
+1. Query `SELECT COUNT(*) FROM chat_messages WHERE chat_id = ? AND role = 'agent'`
+2. If count > 0 (meaning there's already an agent response), ignore the `rename_chat` action silently
+3. If count = 0, execute the rename
+
+Silent ignore (not an error) because agents may mistakenly try later - no harm in ignoring.
+
+### Chat Queue Processing
+
+Separate chat processor with immediate pickup:
+
+- Maintain a separate polling loop for chat queue (same interval as task runner)
+- When user sends a message: create `chat_queue` item with status `queued`, return API response immediately
+- Chat processor picks up `queued` chat items
+- No "one per workspace" limit - multiple chats can process concurrently
+- Track active chat subprocesses in separate `Map<string, Subprocess>` keyed by chat_id (for cancellation)
+- On completion: parse output, execute actions, add agent message to chat, emit SSE events
+- On error: add system message to chat, mark queue item failed
+
+Simpler than task processing (no multi-agent loop), but uses same subprocess and error handling patterns.
+
+### Action Execution
+
+When an agent returns multiple actions, execute all and collect errors:
+
+- Execute actions in array order
+- Each action executes independently (failure of one doesn't stop others)
+- Collect all errors and add a single system message summarizing failures
+- Example: If `create_agent` fails due to duplicate name but `rename_chat` succeeds, system message says "Action failed: create_agent - Agent name 'Reviewer' already exists"
+- The agent's conversational `message` is always added to chat (regardless of action success/failure)
 
 ### Chat CLI Override
 
@@ -544,10 +726,60 @@ When user switches agents mid-chat:
 
 ## API & Real-Time
 
+### HTTP Framework
+
+**Hono** - lightweight, fast web framework designed for edge/Bun environments:
+
+- Simple routing: `app.get('/api/workspaces', handler)`
+- Middleware support for error handling, logging
+- TypeScript-first with good type inference
+- Works with Bun's native APIs (including SSE via native Response)
+- Popular choice for Bun projects, well-documented
+
+### Request Validation
+
+Zod schemas with Hono integration:
+
+- Define Zod schemas for each request body type
+- Use `@hono/zod-validator` middleware for automatic validation
+- Schemas double as TypeScript types (single source of truth)
+- Example: `CreateWorkspaceSchema = z.object({ title: z.string().min(1), description: z.string().optional() })`
+
+### Error Response Format
+
+Simple JSON with code and message:
+
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Task not found"
+  }
+}
+```
+
+HTTP status codes for categories:
+- `400` - Validation errors (code: `VALIDATION_ERROR`, message includes field details)
+- `404` - Resource not found (code: `NOT_FOUND`)
+- `409` - Conflict (code: `CONFLICT`, e.g., duplicate agent name)
+- `500` - Server error (code: `INTERNAL_ERROR`)
+
+Frontend can display `error.message` directly.
+
+### Pagination
+
+No pagination for v1. Return all items in list endpoints. Reasons:
+
+- Single-user app with limited data volume
+- Comments/logs per task are typically manageable (tens, not thousands)
+- Simplifies frontend implementation
+
+Apply same principle to all list endpoints: workspaces, agents, tasks, comments, logs, chats, messages.
+
 ### REST Endpoints
 
 #### Workspaces
-- `GET /api/workspaces` - List all workspaces
+- `GET /api/workspaces` - List all workspaces (supports `?q=` for title search)
 - `POST /api/workspaces` - Create workspace
 - `GET /api/workspaces/:id` - Get workspace details
 - `PUT /api/workspaces/:id` - Update workspace
@@ -578,7 +810,7 @@ When user switches agents mid-chat:
 - `GET /api/tasks/:id/logs` - List activity logs
 
 #### Chats
-- `GET /api/workspaces/:id/chats` - List chats in workspace
+- `GET /api/workspaces/:id/chats` - List chats in workspace (supports `?q=` for title search)
 - `POST /api/workspaces/:id/chats` - Create chat (specify agent_id or null for Malamar)
 - `GET /api/chats/:id` - Get chat details with messages
 - `PUT /api/chats/:id` - Update chat (title, agent_id, cli_type)
@@ -601,7 +833,19 @@ When user switches agents mid-chat:
 
 `GET /api/events` - Server-Sent Events stream
 
-Events:
+**Implementation Pattern:**
+
+EventEmitter + connection registry:
+
+- Create a singleton `EventEmitter` instance for pub/sub
+- Maintain a `Set<Response>` of active SSE connections
+- On new SSE request: add response to Set, send initial `:ok` comment, set up disconnect cleanup
+- When emitting events: `eventEmitter.emit(eventType, payload)` triggers a handler that iterates the Set and writes to each connection
+- On client disconnect: remove from Set
+- Event format per SSE spec: `event: {type}\ndata: {json}\n\n`
+- Include `retry: 3000` on connection start for auto-reconnect hint
+
+**Events:**
 ```
 event: task.status_changed
 data: {"task_id": "xxx", "task_summary": "...", "old_status": "todo", "new_status": "in_progress", "workspace_id": "yyy"}
@@ -627,8 +871,6 @@ data: {"chat_id": "xxx", "chat_title": "...", "agent_name": "Malamar", "workspac
 event: chat.processing_finished
 data: {"chat_id": "xxx", "chat_title": "...", "agent_name": "Malamar", "workspace_id": "yyy"}
 ```
-
-Backend uses in-process pub/sub event emitter to fan out to connected clients.
 
 **Broadcasting Scope:** SSE events are broadcast to all connected clients without workspace scoping. Client-side filtering handles noise if needed. Workspace-scoped broadcasting will be revisited when adding multi-user authentication.
 
@@ -789,9 +1031,35 @@ When CLIs are unhealthy, display warnings:
 3. Serve static files from that location
 4. Overwrite on each startup to ensure UI matches binary version
 
+### Static File Serving
+
+Hono static middleware with embedded files:
+
+- At build time: embed frontend `dist/` files into the binary (Bun supports this)
+- At runtime: serve embedded files for non-API routes
+- Route priority:
+  1. `/api/*` → API handlers
+  2. Known static extensions (`.js`, `.css`, `.png`, etc.) → serve from embedded assets
+  3. All other routes → serve `index.html` (SPA fallback for client-side routing)
+- Set appropriate `Content-Type` headers based on file extension
+- Set cache headers for assets (e.g., `Cache-Control: public, max-age=31536000` for hashed filenames)
+
+### CORS Handling
+
+No CORS handling needed. The frontend uses Vite's proxy feature during development to forward `/api/*` requests to `localhost:3456`. The frontend always calls `/api/...` relative URLs, making behavior consistent between development and production.
+
+### File Attachments
+
+Attachments are only for CLI agents to read, not displayed in the UI. No API endpoint for serving attachment files.
+
 ---
 
 ## Background Jobs
+
+Simple setInterval with startup trigger for all scheduled jobs:
+
+- Store last run timestamp in memory (not persisted - if Malamar restarts, jobs run again which is fine)
+- Jobs are async functions that don't block the event loop
 
 ### Runner Job
 
@@ -802,6 +1070,7 @@ When CLIs are unhealthy, display warnings:
 ### Cleanup Job
 
 - **Type**: Scheduled daily
+- **Implementation**: `setInterval(runCleanup, 24 * 60 * 60 * 1000)` + run once on startup
 - **Task queue cleanup**: Delete completed/failed task queue items > 7 days old
 - **Chat queue cleanup**: Delete completed/failed chat queue items > 7 days old
 - **Task cleanup**: Delete done tasks exceeding workspace retention period
@@ -810,11 +1079,20 @@ When CLIs are unhealthy, display warnings:
 
 - **Type**: Scheduled
 - **Interval**: Every 5 minutes
+- **Implementation**: `setInterval(checkCliHealth, 5 * 60 * 1000)` + run once on startup
 - **Action**: For each supported CLI:
   1. Search for binary in PATH (or custom path from settings)
-  2. Run test prompt: "Respond with OK"
-  3. Verify successful exit with non-empty output
-  4. Update in-memory status ("Healthy" or "Unhealthy")
+  2. Run CLI with minimal prompt (e.g., `claude --prompt "Reply OK"` or equivalent per CLI)
+  3. Health check passes if:
+     - Process exits with code 0
+     - stdout is non-empty (any response, doesn't need to match "OK")
+  4. Health check fails if:
+     - Binary not found → error: "Binary not found in PATH"
+     - Non-zero exit code → error: "CLI exited with code {code}"
+     - Empty output → error: "CLI returned empty response"
+     - Timeout (30 seconds) → error: "CLI health check timed out"
+  5. Store status and error message in memory
+  6. Expose via `GET /api/health/cli` endpoint
 
 **Manual Refresh:** Users can trigger immediate CLI re-detection via the "Refresh CLI Status" button on the CLI Settings page (calls `POST /api/health/cli/refresh`). This gives immediate feedback after installing new CLIs, while the periodic check handles background changes.
 
@@ -823,6 +1101,15 @@ When CLIs are unhealthy, display warnings:
 ## Configuration Reference
 
 Configuration via environment variables (priority) or CLI flags.
+
+**Loading Priority** (later wins):
+1. Hardcoded defaults (e.g., port 3456)
+2. CLI flags (`--port 8080`)
+3. Environment variables (`MALAMAR_PORT=9000`)
+
+Parse CLI flags first using Bun's `process.argv` or a minimal parser. Then check for corresponding env vars and override if present. Example: `--port 8080` + `MALAMAR_PORT=9000` → uses 9000.
+
+Expose final config via `malamar config` command.
 
 ### Server
 
@@ -844,9 +1131,18 @@ Configuration via environment variables (priority) or CLI flags.
 | Log verbosity | `MALAMAR_LOG_LEVEL` | `--log-level` | `info` |
 | Output format | `MALAMAR_LOG_FORMAT` | `--log-format` | `text` |
 
-Log levels: `debug`, `info`, `warn`, `error`
+Log levels: `debug`, `info`, `warn`, `error` (each includes higher levels)
 
 Log formats: `text`, `json`
+
+**Implementation:**
+
+Simple custom logger module:
+- Text format: `[2025-01-18T10:30:00Z] [INFO] Message here { context }`
+- JSON format: `{"timestamp":"2025-01-18T10:30:00Z","level":"info","message":"Message here","context":{}}`
+- API: `logger.info("message", { optional: "context" })`, `logger.error("message", { error })`
+- Write to stdout (text/json based on config)
+- No external logging library needed for this scope
 
 ### Runner
 
@@ -876,6 +1172,43 @@ Log formats: `text`, `json`
 | `malamar doctor` | Check system health (CLIs, database, config) |
 | `malamar config` | Show current configuration |
 
+**`malamar doctor` Output:**
+
+```
+Malamar Doctor
+
+✓ Data directory: ~/.malamar (exists, writable)
+✓ Database: malamar.db (accessible, migrations current)
+✓ Configuration: valid
+
+CLI Status:
+✓ Claude Code: healthy (claude found at /usr/local/bin/claude)
+✗ Gemini CLI: unhealthy (binary not found in PATH)
+✓ Codex CLI: healthy (codex found at /usr/local/bin/codex)
+✗ OpenCode: unhealthy (test prompt failed)
+
+2 of 4 CLIs available
+```
+
+Exit code: 0 if all critical checks pass (data dir, database), non-zero if critical failure. CLI availability is informational, not critical (user might only need one CLI).
+
+### First Startup Detection
+
+Check for data directory existence:
+
+- On startup, check if `~/.malamar` directory exists (or `MALAMAR_DATA_DIR` if configured)
+- If directory does NOT exist:
+  1. Set in-memory flag `isFirstLaunch = true`
+  2. Create the directory
+  3. Initialize database, run migrations
+  4. Create sample workspace with agents
+- If directory exists:
+  1. `isFirstLaunch = false`
+  2. Open existing database, run migrations
+  3. No sample workspace creation
+
+This ensures sample workspace is only created once, ever. Even if user deletes all workspaces, directory still exists, so no recreation.
+
 ### First Startup
 
 On first launch (empty database):
@@ -898,6 +1231,17 @@ On first launch (empty database):
 Email notifications are sent via fire-and-forget async calls. No separate background job - triggered inline but non-blocking.
 
 **Failure Handling:** Failures are silently logged to application error log. No user-facing alert for notification failures.
+
+**Test Email Endpoint (`POST /api/settings/test-email`):**
+
+- Request body: empty (uses saved Mailgun settings)
+- Validate settings exist (API key, domain, from/to emails) → 400 if missing
+- Send email with:
+  - Subject: "Malamar Test Email"
+  - Body: "This is a test email from Malamar. If you received this, your email notifications are configured correctly."
+- Wait for Mailgun API response (don't fire-and-forget for test)
+- On success: return 200 `{ "success": true }`
+- On Mailgun error: return 400 `{ "error": { "code": "EMAIL_FAILED", "message": "Mailgun error: {details}" } }`
 
 ### Domain Agnostic Design
 
