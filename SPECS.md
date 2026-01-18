@@ -2,7 +2,7 @@
 
 > **Malamar lets you combine the strengths of different AI CLIs into autonomous multi-agent workflows, limited only by your creativity.**
 
-This document covers WHAT Malamar does and WHY. For implementation details (HOW), see the technical design files linked in [README.md](./README.md).
+This document covers WHAT Malamar does and WHY. For implementation details (HOW), see [TECHNICAL_DESIGN.md](./TECHNICAL_DESIGN.md).
 
 ---
 
@@ -13,10 +13,8 @@ This document covers WHAT Malamar does and WHY. For implementation details (HOW)
 - [Application Overview](#application-overview)
 - [Core Concepts](#core-concepts)
 - [The Multi-Agent Loop](#the-multi-agent-loop)
-- [User Interface](#user-interface)
 - [Notifications](#notifications)
 - [CLI Support](#cli-support)
-- [Future Vision](#future-vision)
 
 ---
 
@@ -78,13 +76,15 @@ Malamar is a self-contained, Pocketbase-like application:
 
 1. **Distribution**: Single executable binary, or run via `bunx`/`npx`. Can be installed with Homebrew.
 2. **Runtime**: Runs as a background service with a single command (e.g., `./malamar`).
-3. **Data Storage**: Uses `~/.malamar` directory to store the SQLite database, files, and configuration.
-4. **Web Interface**: Exposes a web UI on port `3456` for managing workspaces, agents, tasks, and settings.
+3. **Data Storage**: Uses a configurable data directory to store the database, files, and configuration.
+4. **Web Interface**: Exposes a web UI for managing workspaces, agents, tasks, and settings.
 5. **Remote Access**: Can be accessed remotely via Tailscale for mobile access when away from keyboard.
 6. **Dependencies**: Zero external dependencies. Everything is self-contained (no Redis, no external database).
 7. **Authentication**: No authentication for now. The application is meant to run locally or behind Tailscale.
-8. **Startup and Recovery**: When Malamar starts, tasks that were "In Progress" are automatically resumed. No manual intervention needed.
-9. **Domain Agnostic**: Malamar is purely an orchestration layer - all domain-specific behavior is defined in agent instructions. Use cases include software development, writing, browser automation, system management, and more.
+8. **First Startup**: On first launch, Malamar creates a sample workspace with example agents so users can immediately explore how the system works.
+9. **Startup Recovery**: When Malamar starts, tasks that were mid-processing are automatically re-queued and resumed. No manual intervention needed.
+10. **Concurrent Access**: Multiple browser tabs or devices can access Malamar simultaneously. Changes are synchronized in real-time via polling and server-sent events.
+11. **Domain Agnostic**: Malamar is purely an orchestration layer - all domain-specific behavior is defined in agent instructions. Use cases include software development, writing, browser automation, system management, and more.
 
 ---
 
@@ -105,12 +105,12 @@ A workspace is the roof of everything in Malamar. It contains:
 The working directory determines where agents execute their work. Two modes:
 
 **Static Directory Mode:**
-- User has a pre-configured directory (e.g., a cloned repository with Git setup)
+- User specifies a directory (e.g., a cloned repository with Git setup)
 - All agents work on that specific directory
 - Everything happens there: implement, review, approve, and any other operations
 
 **Temp Folder Mode (Default):**
-- A newly-created random working directory per task (`/tmp/malamar_tasks_{task_id}`)
+- A new temporary directory is created per task
 - Ensures a clean workspace for each task
 - Good for multi-repo tasks or tasks that require isolation
 - Agents can clone repositories or create files as needed
@@ -171,6 +171,7 @@ Tasks are work items that agents process autonomously. Each task has:
 - **Description**: Detailed requirements in markdown. Include all context at creation time - comments are for steering agents during processing, not adding initial context.
 - **Status**: Current state (Todo, In Progress, In Review, Done)
 - **Comments**: Communication channel between user, agents, and system
+- **Activity Log**: History of events (creation, status changes, agent starts/finishes, comments added) - agents receive this context to understand task history
 
 #### Task Statuses
 
@@ -181,12 +182,29 @@ Tasks are work items that agents process autonomously. Each task has:
 | **In Review** | Agents agree there's nothing more to do, or human attention is needed. Waiting for user. |
 | **Done** | Completed. Only humans can move tasks to Done. |
 
+#### Task Actions
+
+Different actions are available depending on status:
+
+| Status | Available Actions |
+|--------|-------------------|
+| **Todo** | Delete, Prioritize |
+| **In Progress** | Delete, Cancel, Move to In Review, Prioritize |
+| **In Review** | Delete, Move to Todo |
+| **Done** | Delete, Move to Todo |
+
+**Cancel Action:** When a user cancels an "In Progress" task:
+1. The CLI subprocess is killed immediately
+2. Task moves to "In Review" (prevents immediate re-pickup)
+3. A system comment is added: "Task cancelled by user"
+4. User can investigate, fix the description/instructions, then comment to restart
+
 #### Comments
 
 Comments are the communication channel for all task stakeholders:
 - **User comments**: Human input to steer agents
 - **Agent comments**: Progress reports, questions, feedback
-- **System comments**: Error notifications, status changes
+- **System comments**: Error notifications, status changes, cancellation notices
 
 ### Chat
 
@@ -200,16 +218,51 @@ The Chat feature allows users to have conversations with agents for ad-hoc assis
 The Malamar agent is a special built-in agent that helps users:
 - Create, update, delete, and reorder agents
 - Update workspace settings
-- Create tasks
 - Answer questions about how to use Malamar
 - Help write effective agent instructions
 
+**Malamar Agent Actions:**
+
+| Action | Description |
+|--------|-------------|
+| `create_agent` | Create a new agent in the workspace |
+| `update_agent` | Update an existing agent's name, instruction, or CLI |
+| `delete_agent` | Delete an agent from the workspace |
+| `reorder_agents` | Change the execution order of agents |
+| `update_workspace` | Update workspace settings |
+| `rename_chat` | Rename the chat title (first response only) |
+
+#### Workspace Agent Chat
+
+When chatting with workspace agents (Planner, Implementer, etc.):
+- **Conversational only**: Workspace agents provide advice, answer questions, and help with their domain expertise
+- **No workspace actions**: Unlike the Malamar agent, workspace agents cannot create/modify agents or workspace settings
+- **Rename chat**: Workspace agents can rename the chat on their first response only
+
 #### Chat Features
 
-- **Agent switching**: Change which agent handles the conversation mid-chat
-- **CLI override**: Override which CLI handles the chat (regardless of agent's default)
-- **File attachments**: Upload files for agents to reference
-- **Actions**: Agents can perform actions (create tasks, create agents) alongside their responses
+**Agent Switching:**
+- Users can change which agent handles the conversation mid-chat
+- Full conversation history is preserved
+- A system message notes the switch: "Switched from [Agent A] to [Agent B]"
+- The new agent sees the entire conversation and continues with full context
+
+**CLI Override:**
+- Users can override which CLI handles the chat, regardless of the agent's default
+- This is a per-chat setting that persists for all messages in that chat
+- Useful for testing different CLIs or when a preferred CLI is unavailable
+
+**File Attachments:**
+- Users can upload files for agents to reference
+- No file size or type restrictions - agents/CLIs handle what they can
+- Duplicate filenames overwrite existing attachments
+- Attachments are cleaned up when the chat is deleted
+
+**Chat Title:**
+- New chats default to "Untitled chat"
+- Agents rename the chat on their first response to reflect the topic
+- After the first response, agents can no longer rename the chat
+- Users can manually edit the title anytime via the UI
 
 ---
 
@@ -222,7 +275,7 @@ This is the core concept of Malamar - how agents work together autonomously.
 1. **Task pickup**: The runner continuously monitors for queued tasks. Each workspace processes one task at a time.
 
 2. **Agent execution**: For each task, the runner routes to each agent sequentially (based on agent order). Each agent:
-   - Receives the full task context (summary, description, all comments)
+   - Receives the full task context (summary, description, all comments, activity log)
    - Works on the task using their assigned CLI
    - Responds with actions (skip, comment, and/or change status)
 
@@ -238,15 +291,14 @@ This is the core concept of Malamar - how agents work together autonomously.
 There is no hard cap on iteration count or time. The loop continues until:
 - All agents skip (nothing to do), OR
 - An agent requests "In Review", OR
-- An error occurs (which triggers a retry via the queue)
+- An error occurs (which triggers a retry)
 
 ### Error Handling
 
 When errors occur (CLI failure, timeout, malformed output):
-1. A System comment is added with error details
-2. The current loop stops
-3. A new queue item is created for retry
-4. The task does NOT move to "In Review" - agents can self-correct in subsequent loops
+- Errors are automatically retried
+- A system comment is added so agents can see what happened and self-correct in subsequent loops
+- The task does NOT move to "In Review" - agents get a chance to recover
 
 ### Queue Priorities
 
@@ -256,47 +308,6 @@ The runner prioritizes tasks in this order:
 3. Most recently updated tasks (LIFO - users can "bump" tasks by commenting)
 
 Tasks in "In Review" or "Done" are not picked up for processing.
-
----
-
-## User Interface
-
-The web interface is exposed on port `3456`. This section covers high-level concepts; detailed UI/UX specifications are in [TECHNICAL_DESIGN_UX.md](./TECHNICAL_DESIGN_UX.md).
-
-### Pages Overview
-
-| Page | Purpose |
-|------|---------|
-| **Workspace List** | Home page showing all workspaces as cards with activity summaries |
-| **Workspace Detail** | Tabs for Tasks (Kanban), Chat, and Agents |
-| **Workspace Settings** | Configure working directory, cleanup, notifications |
-| **Task Detail** | View/edit task, comments, activity logs, take actions |
-| **Chat Detail** | Conversation with an agent, file attachments |
-| **Global Settings** | CLI configuration, Mailgun setup |
-
-### Task Kanban Board
-
-Tasks are displayed in a Kanban board with four columns: Todo, In Progress, In Review, Done.
-- Tasks are ordered by most recently updated
-- Clicking a task opens the task detail popup
-- No drag-and-drop between columns (status changes happen in task detail)
-
-### Task Actions
-
-Different actions are available depending on status:
-
-| Status | Available Actions |
-|--------|-------------------|
-| **Todo** | Delete, Prioritize |
-| **In Progress** | Cancel (stops current loop), Move to In Review, Prioritize |
-| **In Review** | Move to Todo, Delete |
-| **Done** | Move to Todo, Delete |
-
-### Real-Time Updates
-
-The UI stays in sync through:
-- Polling every 3 seconds for active views
-- Server-sent events (SSE) for toast notifications when things happen
 
 ---
 
@@ -326,56 +337,19 @@ Malamar supports multiple AI CLI tools through an adapter pattern.
 
 ### Supported CLIs
 
-| CLI | Binary Name |
+| CLI | Description |
 |-----|-------------|
-| Claude Code | `claude` |
-| Gemini CLI | `gemini` |
-| OpenAI Codex CLI | `codex` |
-| OpenCode | `opencode` |
+| **Claude Code** | Anthropic's CLI for Claude |
+| **Gemini CLI** | Google's CLI for Gemini |
+| **Codex CLI** | OpenAI's CLI for Codex |
+| **OpenCode** | Open-source multi-provider CLI |
 
 ### Auto-Detection
 
-On startup and periodically, Malamar automatically detects available CLIs:
-1. Search for the binary in PATH (or custom path from settings)
-2. Run a simple test prompt to verify it works
-3. Store the status ("Healthy" or "Unhealthy")
+On startup and periodically, Malamar detects available CLIs and verifies they work. The status ("Healthy" or "Unhealthy") is displayed in the CLI settings page.
 
 ### CLI Settings
 
-Per-CLI configuration:
-- **Binary Path**: Custom path override (empty = use PATH)
+Per-CLI configuration is available:
+- **Binary Path**: Custom path override (empty = search in PATH)
 - **Environment Variables**: Key-value pairs to inject when running the CLI
-
----
-
-## Future Vision
-
-Future enhancements to consider (not for initial implementation):
-
-### S3 Backup
-
-S3-compatible automatic backup for the SQLite database and files in `~/.malamar`.
-
-### Import/Export
-
-Ability to export workspaces, tasks, and settings for backup or migration, and import them into another Malamar instance.
-
-### Related Tasks Query
-
-Allow agents to query Malamar's API to collect additional information such as related tasks in the same workspace.
-
-### In-Browser Push Notifications
-
-Add in-browser push notifications as a notification channel, using the same configurable events as email notifications.
-
-### Clone Workspace
-
-Ability to clone a workspace, including its settings and agents, but starting fresh with no tasks. May extend to cloning individual agents or tasks.
-
-### Agent Client Protocol (ACP)
-
-Investigate using the Agent Client Protocol (ACP, https://zed.dev/acp) as an alternative to calling AI CLIs via subprocess commands.
-
-### Community Gallery
-
-A gallery where users can share and discover agent configurations created by the community.

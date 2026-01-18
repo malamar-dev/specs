@@ -4,11 +4,46 @@ This document covers the technical implementation details for Malamar. For produ
 
 ## Table of Contents
 
+- [Architecture Overview](#architecture-overview)
 - [Data Model](#data-model)
-- [Core Runtime](#core-runtime)
-- [External Integrations](#external-integrations)
-- [User Interface](#user-interface)
+- [Runner & Queue Mechanics](#runner--queue-mechanics)
+- [CLI Adapters](#cli-adapters)
+- [API & Real-Time](#api--real-time)
+- [User Interface Implementation](#user-interface-implementation)
+- [Background Jobs](#background-jobs)
+- [Configuration Reference](#configuration-reference)
 - [Operations](#operations)
+
+---
+
+## Architecture Overview
+
+### Tech Stack
+
+**Backend:**
+- TypeScript with Bun runtime
+- RESTful API
+- Background jobs (runner, cleanup, health check)
+- SSE endpoint for real-time updates
+- SQLite database
+
+**Frontend:**
+- TypeScript with React (via create-vite-app)
+- Bun as the build tool/runtime
+
+**Distribution:**
+- Single executable binary, or run via `bunx`/`npx`
+- Can be installed with Homebrew
+
+### High-Level System Design
+
+Malamar runs as a single process with:
+- An embedded SQLite database for persistence
+- A web server serving both the REST API and static frontend files
+- Background jobs running in-process (runner, cleanup, health check)
+- An in-process pub/sub event emitter for SSE broadcasting
+
+No external dependencies (Redis, external databases, message queues) are required.
 
 ---
 
@@ -16,7 +51,15 @@ This document covers the technical implementation details for Malamar. For produ
 
 ### Database
 
-Malamar uses SQLite as its database, stored at `~/.malamar/malamar.db`. The application runs database migrations automatically on startup. If a migration fails, the application panics to ensure data consistency.
+Malamar uses SQLite as its database, stored at `~/.malamar/malamar.db` (configurable via `MALAMAR_DATA_DIR`).
+
+### Database Migrations
+
+- Migrations run automatically on startup
+- Application panics on migration failure to ensure data consistency
+- Users should backup `~/.malamar` before major updates
+- No automatic rollback - manual restore from backup if needed
+- Simple approach appropriate for local-first single-user app
 
 ### ID Generation
 
@@ -175,20 +218,20 @@ When entities are deleted, associated data is cascade deleted:
 
 ---
 
-## Core Runtime
+## Runner & Queue Mechanics
 
-### Runner
+### Runner Overview
 
 The runner is the main background job that processes tasks. It runs as a continuous loop with configurable polling interval (default: 1000ms).
 
-#### Concurrent Workers
+### Concurrent Workers
 
 - Each workspace has its own worker that handles queue pickup and agent loops
 - Multiple workspaces can process tasks simultaneously
 - Within a workspace, only one task is processed at a time
 - No artificial limit on concurrent workspace workers
 
-#### Queue Pickup Algorithm
+### Queue Pickup Algorithm
 
 Per workspace, the runner picks up queue items in this order:
 
@@ -197,7 +240,7 @@ Per workspace, the runner picks up queue items in this order:
 3. **Most recently processed**: Find the task with the most recent `completed` or `failed` queue item, pick its `queued` item
 4. **LIFO fallback**: Pick the most recently updated `queued` item
 
-#### Agent Execution (Just-in-Time Snapshot)
+### Agent Execution (Just-in-Time Snapshot)
 
 Before executing each agent:
 1. Query for the next agent by finding the smallest `order` value greater than current
@@ -206,7 +249,7 @@ Before executing each agent:
 
 **Mid-Flight Changes:** If workspace settings (like working directory) are changed while a task is actively being processed, the currently running agent continues with the old settings. Subsequent agents in the loop pick up the new settings. This is an accepted risk that applies to both Malamar agent actions and manual user changes.
 
-#### Loop Flow
+### Loop Flow
 
 ```
 1. Pick queue item
@@ -226,7 +269,7 @@ Before executing each agent:
 
 **Workspace With No Agents:** When a workspace has zero agents, tasks immediately move to "In Review" (no agents = all skip). Chats can still happen with the Malamar agent to recreate agents.
 
-#### Error Handling
+### Error Handling
 
 On CLI execution failure, timeout, or malformed output:
 1. Write System comment with error details
@@ -235,33 +278,48 @@ On CLI execution failure, timeout, or malformed output:
 4. Task stays in current status (no move to "In Review")
 5. Natural retry via queue (no explicit backoff)
 
-### Cleanup Job
+**CLI Becomes Unhealthy Mid-Task:**
+- No pre-check of CLI health before invocation - just try to run it
+- If CLI fails, normal error handling kicks in (system comment, retry via queue)
+- If CLI stays unhealthy, task keeps retrying with accumulating error comments
+- User sees errors and can fix the CLI or reassign agent to a different CLI
 
-A single daily background job handling:
+### Task Cancellation
 
-**Queue Cleanup:**
-- Delete `completed` and `failed` queue items older than 7 days
-- Leave `queued` and `in_progress` items untouched
+When a user cancels an "In Progress" task:
+1. CLI subprocess is killed immediately
+2. Task moves to "In Review" (prevents immediate re-pickup)
+3. System comment added: "Task cancelled by user"
+4. User investigates and fixes description/instructions
+5. When user comments, task moves back to Todo → In Progress
+6. User can prioritize if immediate processing needed
 
-**Done Task Cleanup:**
-- Delete tasks in "Done" status exceeding workspace retention period
-- Cascade delete all associated data
+### Deletion While Processing
 
-### CLI Health Check
+**Workspace Deletion:**
+- If any task in the workspace is being processed, kill the CLI subprocess first
+- Then proceed with cascade delete
+- Same logic applies to chat processing - kill any active chat CLI subprocess before deleting
 
-Runs every 5 minutes:
-1. For each supported CLI, search for binary in PATH (or custom path)
-2. Run test prompt: "Respond with OK"
-3. Verify successful exit with non-empty output
-4. Update in-memory status ("Healthy" or "Unhealthy")
+**Task Deletion:**
+- Delete action IS available for In Progress tasks
+- Kill subprocess first, then cascade delete
+- One-click removal for stuck or problematic tasks
 
-**Manual Refresh:** Users can trigger immediate CLI re-detection via the "Refresh CLI Status" button on the CLI Settings page (calls `POST /api/health/cli/refresh`). This gives immediate feedback after installing new CLIs, while the periodic check handles background changes.
+### Startup Recovery
+
+On startup:
+- Find any queue items (task or chat) with status "in_progress"
+- Reset them to "queued"
+- Runner picks them up naturally
+- Tasks stay "In Progress" status, just re-queued for processing
+- Clean crash recovery without special logic
 
 ---
 
-## External Integrations
+## CLI Adapters
 
-### CLI Adapter Implementation
+### Adapter Implementation
 
 Each supported CLI has an adapter with:
 - Command template
@@ -270,7 +328,7 @@ Each supported CLI has an adapter with:
 
 **Locked Down Templates:** CLI command templates are intentionally locked down for stability. Users can customize binary paths and environment variables via CLI Settings, but not the command templates themselves. CLI adapters are hardcoded.
 
-#### CLI Invocation
+### CLI Invocation
 
 ```shell
 # Claude Code (supports JSON schema)
@@ -285,14 +343,14 @@ gemini --prompt "Read the file at /tmp/malamar_task_xxx.md and follow the instru
 
 Environment variables from CLI settings are injected into the subprocess environment.
 
-#### Response Format Enforcement
+### Response Format Enforcement
 
 - **CLIs with schema support** (Claude Code): Use native `--json-schema` flag
 - **CLIs without schema support**: Embed JSON format instruction in the prompt
 
-### Context Passing
+### Task Context Passing
 
-#### Input File
+#### Task Input File
 
 Location: `/tmp/malamar_task_{task_id}.md` (overwritten for each agent execution)
 
@@ -344,7 +402,7 @@ Write your response as JSON to: /tmp/malamar_output_{random_nanoid}.json
 - Both ordered ASC (oldest first) for natural reading flow
 - Author field: agent name, "System", or "User"
 
-#### Output File
+#### Task Output File
 
 Location: `/tmp/malamar_output_{random_nanoid}.json` (pre-created, unique per execution)
 
@@ -435,7 +493,7 @@ Location: `/tmp/malamar_chat_output_{random_nanoid}.json` (fresh file each proce
 - Chat input: `/tmp/malamar_chat_{chat_id}.md` (reused per chat)
 - Chat output: `/tmp/malamar_chat_output_{random_nanoid}.json` (fresh each processing)
 
-#### Chat Working Directory
+### Chat Working Directory
 
 The chat CLI is invoked with a working directory that respects the workspace setting:
 
@@ -446,36 +504,45 @@ This allows chat agents to have full access to the workspace's working environme
 
 **Timeout:** There is no timeout consideration for chat processing. Cancellation is purely user-initiated via the stop button in the chat UI.
 
-#### Chat Attachments
+### Chat Attachments
 
 Location: `/tmp/malamar_chat_{chat_id}_attachments/{filename}`
 
-Files are stored here when users upload them. A system message is added to the chat noting the file path. Duplicate filenames overwrite existing files.
+- Files are stored here when users upload them
+- A system message is added to the chat noting the file path
+- Duplicate filenames overwrite existing files
+- No file size or type restrictions
+- CLIs that support images/binaries can use them; others treat as text
 
-### Mailgun Integration
+### Chat Title Behavior
 
-Email notifications are sent via fire-and-forget async calls. No separate background job - triggered inline but non-blocking.
+- Default title: "Untitled chat"
+- `rename_chat` action available to agents on first response only
+- After first agent response, `rename_chat` action becomes unavailable
+- User can edit title anytime via UI
 
-**Failure Handling:** Failures are silently logged to application error log. No user-facing alert for notification failures.
+### Chat CLI Override
+
+- Per-chat setting stored in `chats.cli_type` column
+- When set, overrides the agent's default CLI for all messages in that chat
+- For Malamar Agent (or when no override and no agent CLI), use first healthy CLI in this order:
+  1. Claude Code
+  2. Codex CLI
+  3. Gemini CLI
+  4. OpenCode
+
+### Chat Agent Switching
+
+When user switches agents mid-chat:
+- Full conversation history is preserved
+- System message added: "Switched from [Agent A] to [Agent B]"
+- New agent sees entire conversation and continues with full context
 
 ---
 
-## User Interface
+## API & Real-Time
 
-### Tech Stack
-
-**Backend:**
-- TypeScript with Bun runtime
-- RESTful API
-- Background jobs (runner, cleanup, health check)
-- SSE endpoint for real-time updates
-- SQLite database
-
-**Frontend:**
-- TypeScript with React (via create-vite-app)
-- Bun as the build tool/runtime
-
-### API Endpoints
+### REST Endpoints
 
 #### Workspaces
 - `GET /api/workspaces` - List all workspaces
@@ -526,15 +593,9 @@ Email notifications are sent via fire-and-forget async calls. No separate backgr
 #### Health
 - `GET /api/health` - Overall health status
 - `GET /api/health/cli` - CLI availability status
-- `POST /api/health/cli/refresh` - Manually trigger CLI re-detection (for "Refresh CLI Status" button)
+- `POST /api/health/cli/refresh` - Manually trigger CLI re-detection
 
-### Real-Time Updates
-
-#### Polling
-- Task detail view polls every 3 seconds
-- Uses React Query (or similar) for caching and deduplication
-
-#### SSE Endpoint
+### SSE Events
 
 `GET /api/events` - Server-Sent Events stream
 
@@ -574,6 +635,34 @@ Backend uses in-process pub/sub event emitter to fan out to connected clients.
 
 **Broadcasting Scope:** SSE events are broadcast to all connected clients without workspace scoping. Client-side filtering handles noise if needed. Workspace-scoped broadcasting will be revisited when adding multi-user authentication.
 
+---
+
+## User Interface Implementation
+
+### Page Structure
+
+| Page | Purpose |
+|------|---------|
+| **Workspace List** | Home page showing all workspaces as cards with activity summaries |
+| **Workspace Detail** | Tabs for Tasks (Kanban), Chat, and Agents |
+| **Workspace Settings** | Configure working directory, cleanup, notifications |
+| **Task Detail** | View/edit task, comments, activity logs, take actions |
+| **Chat Detail** | Conversation with an agent, file attachments |
+| **Global Settings** | CLI configuration, Mailgun setup |
+
+### Task Kanban Board
+
+Tasks are displayed in a Kanban board with four columns: Todo, In Progress, In Review, Done.
+- Tasks are ordered by most recently updated
+- Clicking a task opens the task detail popup
+- No drag-and-drop between columns (status changes happen in task detail)
+
+### Real-Time Updates
+
+- Task detail view polls every 3 seconds
+- Uses React Query (or similar) for caching and deduplication
+- SSE events trigger toast notifications for important events
+
 ### Single Executable Distribution
 
 **Preferred approach:** Bundle frontend build output directly into Bun binary using `bun build --compile`, serving embedded static assets if supported.
@@ -586,26 +675,53 @@ Backend uses in-process pub/sub event emitter to fan out to connected clients.
 
 ---
 
-## Operations
+## Background Jobs
 
-### Configuration
+### Runner Job
+
+- **Type**: Continuous loop
+- **Interval**: Configurable via `MALAMAR_RUNNER_POLL_INTERVAL` (default: 1000ms)
+- **Concurrency**: One worker per workspace, unlimited workspaces
+
+### Cleanup Job
+
+- **Type**: Scheduled daily
+- **Task queue cleanup**: Delete completed/failed task queue items > 7 days old
+- **Chat queue cleanup**: Delete completed/failed chat queue items > 7 days old
+- **Task cleanup**: Delete done tasks exceeding workspace retention period
+
+### CLI Health Check Job
+
+- **Type**: Scheduled
+- **Interval**: Every 5 minutes
+- **Action**: For each supported CLI:
+  1. Search for binary in PATH (or custom path from settings)
+  2. Run test prompt: "Respond with OK"
+  3. Verify successful exit with non-empty output
+  4. Update in-memory status ("Healthy" or "Unhealthy")
+
+**Manual Refresh:** Users can trigger immediate CLI re-detection via the "Refresh CLI Status" button on the CLI Settings page (calls `POST /api/health/cli/refresh`). This gives immediate feedback after installing new CLIs, while the periodic check handles background changes.
+
+---
+
+## Configuration Reference
 
 Configuration via environment variables (priority) or CLI flags.
 
-#### Server
+### Server
 
 | Setting | Env Var | CLI Flag | Default |
 |---------|---------|----------|---------|
 | Bind address | `MALAMAR_HOST` | `--host` | `127.0.0.1` |
 | Server port | `MALAMAR_PORT` | `--port` | `3456` |
 
-#### Data & Storage
+### Data & Storage
 
 | Setting | Env Var | CLI Flag | Default |
 |---------|---------|----------|---------|
 | Data directory | `MALAMAR_DATA_DIR` | `--data-dir` | `~/.malamar` |
 
-#### Logging
+### Logging
 
 | Setting | Env Var | CLI Flag | Default |
 |---------|---------|----------|---------|
@@ -613,21 +729,26 @@ Configuration via environment variables (priority) or CLI flags.
 | Output format | `MALAMAR_LOG_FORMAT` | `--log-format` | `text` |
 
 Log levels: `debug`, `info`, `warn`, `error`
+
 Log formats: `text`, `json`
 
-#### Runner
+### Runner
 
 | Setting | Env Var | CLI Flag | Default |
 |---------|---------|----------|---------|
 | Poll interval (ms) | `MALAMAR_RUNNER_POLL_INTERVAL` | `--runner-poll-interval` | `1000` |
 
-#### Temp Files
+### Temp Files
 
 | Setting | Env Var | CLI Flag | Default |
 |---------|---------|----------|---------|
 | Temp directory | `MALAMAR_TEMP_DIR` | `--temp-dir` | System `/tmp` |
 
 **Cleanup Policy:** Malamar does not proactively clean up its own temp files. OS-dependent `/tmp` cleanup is acceptable. Users needing control can use `MALAMAR_TEMP_DIR` to manage their own temp directory.
+
+---
+
+## Operations
 
 ### CLI Commands
 
@@ -641,26 +762,28 @@ Log formats: `text`, `json`
 | `malamar export` | Export data (details TBD) |
 | `malamar import` | Import data (details TBD) |
 
-### Background Jobs
+### First Startup
 
-#### Runner Job
+On first launch (empty database):
+- Auto-create sample workspace: "Sample: Code Assistant"
+- 4 agents: Planner, Implementer, Reviewer, Approver
+- Each with generic but useful instructions demonstrating the workflow
+- No sample tasks - user creates their first task
+- Sample workspace can be deleted when no longer needed
 
-- **Type**: Continuous loop
-- **Interval**: Configurable via `MALAMAR_RUNNER_POLL_INTERVAL` (default: 1000ms)
-- **Concurrency**: One worker per workspace, unlimited workspaces
+### Concurrent Access
 
-#### Cleanup Job
+- No locking mechanism
+- Multiple tabs can edit - last save wins
+- SSE and polling keep all tabs synchronized
+- If user comments while agent is processing, comment is added and agent continues (sees it on next loop iteration)
+- Simple approach matching single-user assumption
 
-- **Type**: Scheduled daily
-- **Task queue cleanup**: Delete completed/failed task queue items > 7 days old
-- **Chat queue cleanup**: Delete completed/failed chat queue items > 7 days old
-- **Task cleanup**: Delete done tasks exceeding workspace retention period
+### Mailgun Integration
 
-#### CLI Health Check Job
+Email notifications are sent via fire-and-forget async calls. No separate background job - triggered inline but non-blocking.
 
-- **Type**: Scheduled
-- **Interval**: Every 5 minutes
-- **Action**: Test each CLI, update in-memory status
+**Failure Handling:** Failures are silently logged to application error log. No user-facing alert for notification failures.
 
 ### Domain Agnostic Design
 

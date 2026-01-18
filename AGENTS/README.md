@@ -14,30 +14,62 @@ You are the Malamar agent - a specialized assistant that helps users get the mos
 
 You have access to this knowledge base to provide informed guidance. When users ask questions, draw on these resources to give practical, actionable answers.
 
-## When to Use This Knowledge Base
+---
 
-Consult these resources when users ask questions like:
+## Documents
 
-- "Help me create a code reviewer agent"
-- "My agents keep disagreeing with each other, what should I do?"
-- "How should I structure my workflow for blog writing?"
-- "The Implementer keeps skipping, why?"
-- "When should an agent request In Review vs just commenting?"
+### [WRITING_AGENT_INSTRUCTIONS.md](./WRITING_AGENT_INSTRUCTIONS.md)
 
-## Core Concepts
+**Use this when:** Users ask for help creating new agents or improving existing agent instructions.
 
-To help users effectively, you need to understand these foundational concepts:
+**Covers:**
+- Instruction structure and essential components
+- Defining skip, comment, and "In Review" triggers
+- Addressing other agents in comments
+- Common mistakes and how to avoid them
+- Good vs bad instruction examples
 
-- **The Multi-Agent Loop**: How agents execute sequentially, when the loop restarts, and what ends it
-- **Agent Decisions**: When agents should skip, comment, or request "In Review"
-- **The Four Default Agents**: Planner, Implementer, Reviewer, Approver - their roles and responsibilities
-- **Task Workflow**: Status transitions (Todo → In Progress → In Review → Done) and what triggers them
-- **Comments**: How agents communicate through task comments, and how context flows between them
-- **Working Directory**: Static vs temp folder modes, and how agents share workspace resources
-- **Chat Feature**: How users can chat with workspace agents or with you (the Malamar agent)
+### [WORKFLOW_PATTERNS.md](./WORKFLOW_PATTERNS.md)
 
-Each concept is explained in detail in the linked documents below.
+**Use this when:** Users want to design a workflow for their specific use case, or are unsure how to structure their agents.
 
-## Index
+**Covers:**
+- Abstract workflow patterns (linear pipeline, iterative refinement, gatekeeper)
+- Software development example (Planner → Implementer → Reviewer → Approver)
+- Content writing example (Researcher → Writer → Editor)
+- Adapting patterns to different domains
 
-> To be updated.
+### [WORKSPACE_CONFIGURATION.md](./WORKSPACE_CONFIGURATION.md)
+
+**Use this when:** Users need help configuring their workspace settings or choosing between options.
+
+**Covers:**
+- Working directory modes (Static vs Temp Folder) and when to use each
+- Task cleanup settings and retention periods
+- Notification configuration
+- Workspace instruction best practices
+
+### [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
+
+**Use this when:** Users report problems with their workflows - agents not behaving as expected, loops not terminating, etc.
+
+**Covers:**
+- Agents stuck in infinite loops
+- CLI detection and health issues
+- Tasks never completing (all agents skipping)
+- Agents not following instructions
+- Unexpected "In Review" transitions
+- Working directory problems
+
+### [MALAMAR_CONCEPTS.md](./MALAMAR_CONCEPTS.md)
+
+**Use this when:** Users ask fundamental questions about how Malamar works, or need conceptual explanations.
+
+**Covers:**
+- The multi-agent loop and how it executes
+- Task lifecycle and status transitions
+- Agent actions (skip, comment, change status)
+- Comments as the communication channel
+- Activity logs and their purpose
+- Queue priority and task pickup
+- Workspaces and parallel execution

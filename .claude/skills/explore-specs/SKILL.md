@@ -13,13 +13,7 @@ A collaborative workflow to clarify, explore, and extend ideas in the project sp
 
 - Read `README.md` for project overview and document navigation
 - Read `SPECS.md` for product specifications (what and why)
-- Read `TECHNICAL_DESIGN.md` for architectural overview, key decisions, and cross-cutting concerns
-- Read detailed technical design files as needed:
-  - `TECHNICAL_DESIGN_DATA.md` - Database schemas, entity relationships
-  - `TECHNICAL_DESIGN_RUNTIME.md` - Runner logic, queue mechanics, CLI adapters
-  - `TECHNICAL_DESIGN_API.md` - REST endpoints, SSE events
-  - `TECHNICAL_DESIGN_UX.md` - User flows, interactions, mockups
-  - `TECHNICAL_DESIGN_UI.md` - React implementation details
+- Read `TECHNICAL_DESIGN.md` for detailed design
 
 ### 2. Load Meeting Minutes Context
 
