@@ -9,7 +9,6 @@ This document covers WHAT Malamar does and WHY. For implementation details (HOW)
 ## Table of Contents
 
 - [Problem Statement](#problem-statement)
-- [The Vision](#the-vision)
 - [Target Users](#target-users)
 - [Application Overview](#application-overview)
 - [Core Concepts](#core-concepts)
@@ -40,46 +39,36 @@ This "quit, spin up, instruct, repeat" cycle is:
 
 ### Why Multiple AI Tools
 
-Each AI CLI has distinct strengths and tradeoffs:
+Each AI CLI has distinct strengths:
 
-| Tool | Strengths | Tradeoffs |
-|------|-----------|-----------|
-| **Claude Code** | Powerful, excellent instruction following | Expensive, low usage limits |
-| **Gemini CLI** | Cheaper, longer context, better writing/multilingual | Weaker instruction following |
-| **Codex CLI** | Good for long working sessions | Can be naive |
-| **OpenCode** | Local LLM via Ollama for compliance/PII | Depends on local hardware |
+| Tool | Strengths |
+|------|-----------|
+| **Claude Code** | Best-in-class instruction following, advanced agentic features (skills, session management), rich IDE integrations |
+| **Gemini CLI** | Generous free tier, industry-leading context window, Google Search grounding, open-source, MCP support |
+| **Codex CLI** | Session persistence/resume, built-in code review workflow, skills system, context compaction |
+| **OpenCode** | Fully local/offline operation, data never leaves machine, no subscription costs, supports 75+ LLM providers |
 
-No single tool is best for everything. The optimal workflow combines their strengths while mitigating their weaknesses.
+Each tool excels in different areas. The optimal workflow combines their unique strengths for autonomous, end-to-end task completion.
 
 ### The Core Value
 
-Malamar's multi-agent approach (Planner → Implementer → Reviewer → Approver) provides value even with a single CLI:
+Malamar lets you combine the autonomous multi-agent loop with the unique strengths of different CLIs:
 
-1. **Automatic mistake catching**: Each agent verifies the work of agents before it
-2. **Separation of concerns**: Focused, specialized steps instead of one monolithic session
-3. **Reduced hallucination**: Shorter, fresh sessions prevent long-context hallucination where AI makes mistakes late in a session that it wouldn't make in a fresh context
+- **Self-correcting**: Sequential agents catch mistakes a single session would miss
+- **Fresh context**: Each agent starts clean, no long-session degradation
+- **Structured autonomy**: Work progresses through natural checkpoints without supervision
 
----
-
-## The Vision
-
-With Malamar, the workflow becomes:
-
-1. Set up a workspace with agents configured to your best practices
-2. Create a task with detailed requirements
-3. Walk away
-4. Come back later - everything is done, automatically
-
-Human intervention happens through the "In Review" status, email notifications, and the ability to steer agents via comments - even remotely from a phone via Tailscale.
+Even with a single CLI, the loop mechanics alone provide significant value. Add multiple CLIs, and each step can use the tool best suited for the job.
 
 ---
 
 ## Target Users
 
-Malamar is built for developers and power users who:
-- Use multiple AI CLI tools and want to orchestrate them
-- Want autonomous task completion without constant supervision
-- Need flexibility to define their own workflows via agent instructions
+Malamar is built for:
+
+- Those who want to combine multiple AI CLIs into one autonomous workflow
+- Those who want an autonomous workflow, in the easy way
+- Those who want to work with their AI agents remotely - while walking, relaxing, or just away from the laptop
 
 ---
 
@@ -94,10 +83,8 @@ Malamar is a self-contained, Pocketbase-like application:
 5. **Remote Access**: Can be accessed remotely via Tailscale for mobile access when away from keyboard.
 6. **Dependencies**: Zero external dependencies. Everything is self-contained (no Redis, no external database).
 7. **Authentication**: No authentication for now. The application is meant to run locally or behind Tailscale.
-
-**Startup and Recovery:** When Malamar starts, all items in the task event queue are automatically picked up and resumed. No manual intervention is needed for tasks that were "In Progress" from a previous run.
-
-**Domain Agnostic:** Malamar is purely an orchestration layer. It has no opinions on what agents do - all domain-specific behavior is defined in agent instructions. Use cases include software development, writing blog posts, browser automation, system management, HR spreadsheet work, and more.
+8. **Startup and Recovery**: When Malamar starts, tasks that were "In Progress" are automatically resumed. No manual intervention needed.
+9. **Domain Agnostic**: Malamar is purely an orchestration layer - all domain-specific behavior is defined in agent instructions. Use cases include software development, writing, browser automation, system management, and more.
 
 ---
 
@@ -127,12 +114,7 @@ The working directory determines where agents execute their work. Two modes:
 - Ensures a clean workspace for each task
 - Good for multi-repo tasks or tasks that require isolation
 - Agents can clone repositories or create files as needed
-
-For temp folder scenarios, agents learn which repositories or resources to work with from the workspace-level instruction or the task description.
-
-**Working Directory Conflicts:** Malamar does not prevent multiple workspaces from using the same static directory path. Users are responsible for avoiding conflicts.
-
-**Mid-Flight Changes:** If the working directory is changed while a task is actively being processed, the currently running agent continues with the old directory. Subsequent agents pick up the new path.
+- Agents learn which repositories or resources to work with from the workspace-level instruction or task description
 
 ### Agents
 
@@ -169,17 +151,10 @@ When an agent finishes working on a task, it can take these actions:
 
 | Action | Description |
 |--------|-------------|
-| **Skip** | Agent has nothing to do. Use when the task doesn't require this agent's expertise, another agent should handle it, or the agent has nothing meaningful to contribute. |
-| **Comment** | Agent did meaningful work and has progress to report. The comment contains a markdown summary of what changed. |
+| **Skip** | Agent has nothing to do - never comment "I have nothing to do", just skip. |
+| **Comment** | Agent did meaningful work. The comment contains a markdown summary of what changed. |
 | **Change Status** | Agent requests to move the task to "In Review". This is the only status change agents can make. |
-
-**Important:** An agent should NEVER comment "I have nothing to do" or similar. If there's nothing to do, use skip.
-
-**Valid Combinations:**
-1. Skip alone - agent has nothing to do
-2. Comment alone - agent did work, loop continues
-3. Comment + change status to "In Review" - agent comments and requests human attention
-4. Change status alone - technically valid but discouraged; agents should always explain why
+| **Comment + Change Status** | Agent comments and requests human attention. |
 
 #### Workspace With No Agents
 
@@ -193,11 +168,9 @@ When a workspace has all its agents deleted:
 Tasks are work items that agents process autonomously. Each task has:
 
 - **Summary**: Short title describing the task
-- **Description**: Detailed requirements in markdown (all context must be here at creation time)
+- **Description**: Detailed requirements in markdown. Include all context at creation time - comments are for steering agents during processing, not adding initial context.
 - **Status**: Current state (Todo, In Progress, In Review, Done)
 - **Comments**: Communication channel between user, agents, and system
-
-**Important:** When creating a task, users must include all context in the description. Comments are for steering agents during processing, not for adding initial context. The runner may pick up a task immediately after creation.
 
 #### Task Statuses
 
@@ -227,10 +200,9 @@ The Chat feature allows users to have conversations with agents for ad-hoc assis
 The Malamar agent is a special built-in agent that helps users:
 - Create, update, delete, and reorder agents
 - Update workspace settings
+- Create tasks
 - Answer questions about how to use Malamar
 - Help write effective agent instructions
-
-The Malamar agent can perform administrative actions on the workspace (create agents, update settings, create tasks) but cannot delete the workspace itself - that requires explicit human confirmation.
 
 #### Chat Features
 
@@ -320,8 +292,6 @@ Different actions are available depending on status:
 | **In Review** | Move to Todo, Delete |
 | **Done** | Move to Todo, Delete |
 
-**Delete All Done Tasks:** Users can bulk-delete all completed tasks in a workspace (requires confirmation by typing workspace name).
-
 ### Real-Time Updates
 
 The UI stays in sync through:
@@ -341,7 +311,7 @@ Malamar can send email notifications via Mailgun when certain events occur.
 | **On error occurred** | Enabled | CLI failure, timeout, or malformed output |
 | **On task moved to In Review** | Enabled | Task ready for human attention |
 
-**Note:** Notifications are for task-related events only. Chat errors are visible immediately as system messages in the UI.
+> **Note:** Notifications are for task-related events only. Chat errors are visible immediately as system messages in the UI.
 
 ### Settings Scope
 
@@ -375,10 +345,6 @@ On startup and periodically, Malamar automatically detects available CLIs:
 Per-CLI configuration:
 - **Binary Path**: Custom path override (empty = use PATH)
 - **Environment Variables**: Key-value pairs to inject when running the CLI
-
-**CLI Unavailability:** Agent assignment to a CLI is allowed even if the CLI isn't currently available. At runtime, if an assigned CLI isn't available, it's treated as an error (system comment added, retry via queue).
-
-**Unavailability Warnings:** Warnings are displayed on workspace detail, create task form, and task detail pages when an assigned CLI becomes unavailable.
 
 ---
 

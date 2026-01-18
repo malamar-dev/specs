@@ -1,100 +1,131 @@
 # Session 001
 
-## Loop Behavior
+Please read [SKILL.md](../.claude/skills/explore-specs/SKILL.md) to understand the process used to create this file.
 
-Q: What is the primary user flow to optimize?
+## Question #1: Primary User Flow to Optimize
 
-A: Running the multi-agent loop automatically, with the runner orchestrating agents end-to-end.
+What is the primary user experience that Malamar aims to optimize?
 
----
+### Answer
 
-Q: What ends a loop iteration?
+The primary user flow to optimize is running the multi-agent loop automatically, with the runner orchestrating agents end-to-end without manual intervention.
 
-A: The loop ends when the task is moved to "In Review" by an agent/runner action. Only the human is allowed to mark a task "Done."
+## Question #2: Loop Termination Condition
 
----
+What ends a loop iteration?
 
-Q: What is the "nothing to do" signal?
+### Answer
 
-A: All agents choose "skip" in their response and no new comment is added to the task.
+The loop ends when the task is moved to "In Review" by an agent or runner action. Only the human is allowed to mark a task "Done" - agents cannot transition a task directly to the Done status.
 
----
+## Question #3: "Nothing to Do" Signal
 
-Q: If an agent adds a comment, how does the loop proceed?
+What is the "nothing to do" signal that indicates the loop should stop?
 
-A: Continue to the next agent immediately, but pass the updated task data (including the new comment) to that next agent. After all agents finish the current pass, the runner retriggers the loop again with the updated task state.
+### Answer
 
----
+The "nothing to do" signal occurs when all agents choose "skip" in their response and no new comment is added to the task. This indicates that no agent has meaningful work to contribute, and the loop should terminate.
 
-Q: When retriggered, where does the loop start?
+## Question #4: Loop Continuation After Agent Comment
 
-A: Always from the first agent in the workspace order.
+If an agent adds a comment, how does the loop proceed?
 
----
+### Answer
 
-Q: Are agents executed sequentially or in parallel?
+When an agent adds a comment, the loop continues to the next agent immediately, passing the updated task data (including the new comment) to that next agent. After all agents finish the current pass, the runner retriggers the loop again with the updated task state. This ensures each agent sees the latest context from previous agents in the same pass.
 
-A: Sequentially, one agent at a time.
+## Question #5: Loop Restart Position
 
----
+When the loop is retriggered, where does it start?
 
-Q: Is there a hard cap on iterations?
+### Answer
 
-A: No, there is no hard cap on iteration count or time.
+When retriggered, the loop always starts from the first agent in the workspace order. There is no resumption from where it left off - each new loop pass begins at agent #1.
 
----
+## Question #6: Agent Execution Model
 
-Q: What happens if a new task event arrives during an active loop?
+Are agents executed sequentially or in parallel?
 
-A: The runner finishes the current loop, then restarts from agent 1. This follows the task event queue rules described in the spec.
+### Answer
 
----
+Agents are executed sequentially, one agent at a time. This ensures each agent can see the results of previous agents before making its own decisions.
 
-## Agent Status Changes
+## Question #7: Iteration Limits
 
-Q: Can agents change task status?
+Is there a hard cap on loop iterations?
 
-A: Yes, but only by requesting a move to "In Review" via the agent response format. No other status changes are allowed from agents.
+### Answer
 
----
+No, there is no hard cap on iteration count or time. The loop continues until it reaches a termination condition (task moved to "In Review" or all agents skip).
 
-Q: If an agent comments and requests "In Review," what happens?
+## Question #8: New Task Events During Active Loop
 
-A: The runner stops the current loop immediately. If the runner already asserted task properties before calling the agent, it should still stop right away. The next queue item will be picked up, but no agents will run because the task is already "In Review."
+What happens if a new task event arrives during an active loop?
 
----
+### Answer
 
-Q: Do agents work on tasks already in "In Review"?
+The runner finishes the current loop, then restarts from agent #1. This follows the task event queue rules - new events are queued and processed after the current loop completes.
 
-A: No, agents are not allowed to run on tasks in "In Review."
+## Question #9: Agent Status Change Capability
 
----
+Can agents change task status?
 
-## Error Handling
+### Answer
 
-Q: How are agent failures/timeouts handled?
+Yes, but only by requesting a move to "In Review" via the agent response format. No other status changes are allowed from agents - they cannot move tasks to "Todo", "In Progress", or "Done".
 
-A: The runner writes a System comment with detailed error/timeout info, emits a new task event into the queue, and stops the loop. A new loop will be triggered through the queue (contextual retry forever), without moving the task to "In Review."
+## Question #10: Comment with "In Review" Request
 
----
+If an agent comments and requests "In Review," what happens?
 
-Q: Is there backoff for retries?
+### Answer
 
-A: No explicit retry or backoff; the task event queue provides natural delay.
+The runner stops the current loop immediately. Even if the runner already asserted task properties before calling the agent, it stops right away. The next queue item will be picked up, but no agents will run on that task because it is already in "In Review" status.
 
----
+## Question #11: Agents on "In Review" Tasks
 
-## Comments
+Do agents work on tasks already in "In Review"?
 
-Q: Should system comments be structured or free text?
+### Answer
 
-A: Free text only.
+No, agents are not allowed to run on tasks in "In Review" status. These tasks are waiting for human attention and are excluded from agent processing.
 
----
+## Question #12: Agent Failure and Timeout Handling
 
-Q: What fields should a comment have?
+How are agent failures and timeouts handled?
 
-A:
+### Answer
+
+When an agent fails or times out, the runner:
+1. Writes a System comment with detailed error/timeout information
+2. Emits a new task event into the queue
+3. Stops the current loop
+
+A new loop will be triggered through the queue (contextual retry forever), without moving the task to "In Review". This allows the system to recover from transient failures.
+
+## Question #13: Retry Backoff
+
+Is there backoff for retries?
+
+### Answer
+
+No explicit retry or backoff mechanism. The task event queue provides natural delay between retry attempts.
+
+## Question #14: System Comment Format
+
+Should system comments be structured or free text?
+
+### Answer
+
+Free text only. System comments are human-readable messages that describe what happened (errors, status changes, etc.).
+
+## Question #15: Comment Fields
+
+What fields should a comment have?
+
+### Answer
+
+Comments have the following fields:
 - `task_id: string` - The task this comment belongs to
 - `workspace_id: string` - The workspace this comment belongs to
 - `user_id?: string` - NULL if system or agent; if present, always `000000000000000000000` (21 zeros, a mock nanoid)
@@ -103,45 +134,55 @@ A:
 - `created_at: Date`
 - `updated_at: Date`
 
----
+## Question #16: Interpreting user_id and agent_id
 
-Q: How should `user_id` and `agent_id` be interpreted?
+How should `user_id` and `agent_id` be interpreted?
 
-A: `user_id` is NULL for system/agent comments; if present it is always the mock nanoid of all zeros. `agent_id` is NULL for system/user comments. `content` is long markdown text.
+### Answer
 
----
+- `user_id` is NULL for system and agent comments; if present, it is always the mock nanoid of all zeros (representing the single user)
+- `agent_id` is NULL for system and user comments; if present, it contains the agent's nanoid
+- `content` is long markdown text that can contain any formatting
 
-Q: Will there be multiple users later?
+## Question #17: Multiple Users
 
-A: Yes, but for now there is only one user with no auth, so the single mock user ID is used everywhere.
+Will there be multiple users later?
 
----
+### Answer
 
-Q: Should the mock `user_id` be a config value?
+Yes, multiple users are planned for the future. For now, there is only one user with no authentication, so the single mock user ID (`000000000000000000000`) is used everywhere.
 
-A: Hardcoded is acceptable for now.
+## Question #18: Mock user_id Configuration
 
----
+Should the mock `user_id` be a config value?
 
-## Agent Configuration
+### Answer
 
-Q: How are agents identified?
+Hardcoded is acceptable for now. The mock user ID can remain a constant in the codebase until multi-user support is implemented.
 
-A: Each agent has its own nanoid. The default example agents are auto-created per workspace, but users can edit, delete, add, and reorder them.
+## Question #19: Agent Identification
 
----
+How are agents identified?
 
-Q: Is an explicit agent `order` field required?
+### Answer
 
-A: Yes, and it must be unique within the workspace. When reordering agents, the client/UI must send all the new valid ordering.
+Each agent has its own nanoid. The default example agents (Planner, Implementer, Reviewer, Approver) are auto-created per workspace, but users can edit, delete, add, and reorder them as needed.
 
----
+## Question #20: Agent Order Field
 
-## Agent Response Format
+Is an explicit agent `order` field required?
 
-Q: What is the agent response format?
+### Answer
 
-A: Agents respond with a JSON structure containing an array of actions. This allows multiple actions in a single response (e.g., comment AND request "In Review").
+Yes, an explicit `order` field is required and must be unique within the workspace. When reordering agents, the client/UI must send all the new valid ordering to ensure consistency.
+
+## Question #21: Agent Response Format
+
+What is the agent response format?
+
+### Answer
+
+Agents respond with a JSON structure containing an array of actions. This allows multiple actions in a single response (e.g., comment AND request "In Review").
 
 **Structure:**
 ```json
@@ -154,27 +195,33 @@ A: Agents respond with a JSON structure containing an array of actions. This all
 }
 ```
 
----
+## Question #22: Available Agent Action Types
 
-Q: What action types are available for agents?
+What action types are available for agents?
 
-A:
+### Answer
+
+Three action types are available:
 - `skip` - Agent has nothing to do
 - `comment` - Agent did meaningful work and has progress to report
-- `change_status` - Agent requests to move the task (only "in_review" is allowed)
+- `change_status` - Agent requests to move the task (only "in_review" is allowed as the status value)
 
----
+## Question #23: Valid Action Combinations
 
-Q: What are the valid action combinations?
+What are the valid action combinations?
 
-A:
-1. `skip` alone - agent has nothing to do
-2. `comment` alone - agent did work, loop continues
-3. `comment` + `change_status: "in_review"` - agent comments and requests human attention
-4. `change_status: "in_review"` alone - technically valid but discouraged; agents should always explain why human attention is needed
+### Answer
 
----
+Four valid combinations:
+1. `skip` alone - Agent has nothing to do
+2. `comment` alone - Agent did work, loop continues to next agent
+3. `comment` + `change_status: "in_review"` - Agent comments and requests human attention
+4. `change_status: "in_review"` alone - Technically valid but discouraged; agents should always explain why human attention is needed
 
-Q: Should agents comment "I have nothing to do"?
+## Question #24: "Nothing to Do" Comments
 
-A: No. If an agent has nothing to do, it should use `skip`. Never comment "I have nothing to do" or similar.
+Should agents comment "I have nothing to do"?
+
+### Answer
+
+No. If an agent has nothing to do, it should use the `skip` action. Agents should never comment "I have nothing to do" or similar messages - the skip action is the proper way to signal inactivity.

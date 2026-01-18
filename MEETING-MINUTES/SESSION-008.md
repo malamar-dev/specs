@@ -1,174 +1,178 @@
 # Session 008
 
-## Chat Processing Timeout
+Please read [SKILL.md](../.claude/skills/explore-specs/SKILL.md) to understand the process used to create this file.
 
-Q: For chat processing, is there any timeout consideration, or is it purely user-initiated cancellation like tasks?
+## Question #1: Chat Processing Timeout
 
-A: No timeout consideration for chat processing, purely user-initiated cancellation via the stop button.
+For chat processing, is there any timeout consideration, or is it purely user-initiated cancellation like tasks?
 
----
+### Answer
 
-## Remote Knowledge Base Failures
+No timeout consideration for chat processing, purely user-initiated cancellation via the stop button.
 
-Q: When the Malamar agent fetches the remote knowledge base URL and the network is unavailable or the URL returns an error, should this be treated as a silent failure or surface as a system message?
+## Question #2: Remote Knowledge Base Failures
 
-A: Should be treated as a silent failure. The Malamar agent proceeds without the knowledge base if unreachable.
+When the Malamar agent fetches the remote knowledge base URL and the network is unavailable or the URL returns an error, should this be treated as a silent failure or surface as a system message?
 
----
+### Answer
 
-## Reorder Agents Validation
+Should be treated as a silent failure. The Malamar agent proceeds without the knowledge base if unreachable.
 
-Q: For the `reorder_agents` action, what happens if the array is incomplete (missing some agent IDs) or contains invalid IDs?
+## Question #3: Reorder Agents Validation
 
-A: Reject the entire action with a system message. The action must include all valid agent IDs in the workspace.
+For the `reorder_agents` action, what happens if the array is incomplete (missing some agent IDs) or contains invalid IDs?
 
----
+### Answer
 
-## Mid-Flight Working Directory Changes
+Reject the entire action with a system message. The action must include all valid agent IDs in the workspace.
 
-Q: If the working directory is changed (via Malamar agent action or manual UI) while a task is actively being processed, what happens?
+## Question #4: Mid-Flight Working Directory Changes
 
-A: Accept the risk. The currently running agent continues with the old directory; subsequent agents pick up the new path. This applies to both Malamar agent actions and manual user changes.
+If the working directory is changed (via Malamar agent action or manual UI) while a task is actively being processed, what happens?
 
----
+### Answer
 
-## Agent Switch System Message
+Accept the risk. The currently running agent continues with the old directory; subsequent agents pick up the new path. This applies to both Malamar agent actions and manual user changes.
 
-Q: When a user switches agents mid-conversation in a chat, should the input file indicate the context shift?
+## Question #5: Agent Switch System Message
 
-A: Yes, adding a new system message like "Changed agent from Planner to Malamar" when the user switches agents. Important: Only user messages trigger CLI responses - system messages NEVER trigger the agent to respond.
+When a user switches agents mid-conversation in a chat, should the input file indicate the context shift?
 
----
+### Answer
 
-## Create Task Immediate Processing
+Yes, add a new system message like "Changed agent from Planner to Malamar" when the user switches agents. Important: Only user messages trigger CLI responses - system messages NEVER trigger the agent to respond.
 
-Q: When an agent uses the `create_task` action from chat, should there be a delay or draft state before runner pickup?
+## Question #6: Create Task Immediate Processing
 
-A: No, immediate processing is expected. The agent creating the task should include all necessary context in the description, same as manually created tasks.
+When an agent uses the `create_task` action from chat, should there be a delay or draft state before runner pickup?
 
----
+### Answer
 
-## Malamar Agent Instruction Versioning
+No, immediate processing is expected. The agent creating the task should include all necessary context in the description, same as manually created tasks.
 
-Q: The Malamar agent instruction is hardcoded in the codebase. When Malamar is updated with new action types, is "update the binary, get new capabilities" the expected model?
+## Question #7: Malamar Agent Instruction Versioning
 
-A: Yes, confirmed. The hardcoded instruction stays in sync with the binary. Remote knowledge base handles evolving best practices separately.
+The Malamar agent instruction is hardcoded in the codebase. When Malamar is updated with new action types, is "update the binary, get new capabilities" the expected model?
 
----
+### Answer
 
-## CLI Command Template Customization
+Yes, confirmed. The hardcoded instruction stays in sync with the binary. Remote knowledge base handles evolving best practices separately.
 
-Q: Should users be able to customize CLI command templates, or are they intentionally locked down?
+## Question #8: CLI Command Template Customization
 
-A: Intentionally locked down for stability. CLI adapters are hardcoded. Users can customize binary paths and environment variables via CLI Settings, but not command templates.
+Should users be able to customize CLI command templates, or are they intentionally locked down?
 
----
+### Answer
 
-## SSE Event Broadcasting Scope
+Intentionally locked down for stability. CLI adapters are hardcoded. Users can customize binary paths and environment variables via CLI Settings, but not command templates.
 
-Q: Should SSE events be scoped (e.g., only events for the current workspace), or is broadcasting everything acceptable?
+## Question #9: SSE Event Broadcasting Scope
 
-A: Keep broadcasting all events for now. Client-side filtering can handle noise if needed. Revisit scoping when adding multi-user authentication.
+Should SSE events be scoped (e.g., only events for the current workspace), or is broadcasting everything acceptable?
 
----
+### Answer
 
-## Chat Auto-Cleanup
+Keep broadcasting all events for now. Client-side filtering can handle noise if needed. Revisit scoping when adding multi-user authentication.
 
-Q: Should there be auto-cleanup for old/inactive chats, or do they persist indefinitely?
+## Question #10: Chat Auto-Cleanup
 
-A: Chats persist indefinitely until manually deleted. No auto-cleanup needed given the lightweight nature of chat data.
+Should there be auto-cleanup for old/inactive chats, or do they persist indefinitely?
 
----
+### Answer
 
-## Workspace With No Agents
+Chats persist indefinitely until manually deleted. No auto-cleanup needed given the lightweight nature of chat data.
 
-Q: What happens when a workspace has all its agents deleted?
+## Question #11: Workspace With No Agents
 
-A: The system handles it gracefully:
+What happens when a workspace has all its agents deleted?
+
+### Answer
+
+The system handles it gracefully:
 - Chats can still happen with the Malamar agent (to recreate agents)
 - Tasks would immediately move to "In Review" (no agents = all skip)
 - UX improvement: Display a persistent, non-dismissable warning banner at the top of the workspace page when there are zero agents, until at least one agent is created.
 
----
+## Question #12: Agent IDs in Task Input Files
 
-## Agent IDs in Task Input Files
+Should task input files include agent IDs alongside names, like the chat context file does?
 
-Q: Should task input files include agent IDs alongside names, like the chat context file does?
+### Answer
 
-A: No, keep names-only for task input files. Task agents communicate through comments (human-readable) and have no actions requiring IDs. IDs are only needed in chat context files where agents can perform structured actions.
+No, keep names-only for task input files. Task agents communicate through comments (human-readable) and have no actions requiring IDs. IDs are only needed in chat context files where agents can perform structured actions.
 
----
+## Question #13: Chat Error Notifications
 
-## Chat Error Notifications
+Should chat errors trigger email notifications, or are notifications exclusively for task-related events?
 
-Q: Should chat errors trigger email notifications, or are notifications exclusively for task-related events?
+### Answer
 
-A: Notifications remain task-only. Chat is interactive and errors are immediately visible as system messages in the UI. Tasks are autonomous where the user might be away.
+Notifications remain task-only. Chat is interactive and errors are immediately visible as system messages in the UI. Tasks are autonomous where the user might be away.
 
----
+## Question #14: Mailgun Status Visibility
 
-## Mailgun Status Visibility
+Should the Malamar agent have visibility into whether Mailgun is configured?
 
-Q: Should the Malamar agent have visibility into whether Mailgun is configured?
+### Answer
 
-A: Yes, confirmed. The chat context file includes Mailgun configuration status (configured/not configured), enabling the Malamar agent to warn users about missing setup without exposing credentials.
+Yes, confirmed. The chat context file includes Mailgun configuration status (configured/not configured), enabling the Malamar agent to warn users about missing setup without exposing credentials.
 
----
+## Question #15: Chat Activity Logs
 
-## Chat Activity Logs
+Should chats have a separate activity log table like tasks do?
 
-Q: Should chats have a separate activity log table like tasks do?
+### Answer
 
-A: No, message history (including system messages) serves as the audit trail. Tasks need activity logs because comments are for collaboration, not system events. Chats blend both naturally in the message stream.
+No, message history (including system messages) serves as the audit trail. Tasks need activity logs because comments are for collaboration, not system events. Chats blend both naturally in the message stream.
 
----
+## Question #16: Chat Output File Naming
 
-## Chat Output File Naming
+The chat output file uses `chat_id` while task output uses random nanoid. Should this be consistent?
 
-Q: The chat output file uses `chat_id` while task output uses random nanoid. Should this be consistent?
+### Answer
 
-A: Yes, switching to random nanoid for chat output files: `/tmp/malamar_chat_output_{random_nanoid}.json`. This prevents the dangerous scenario where a failed CLI run leaves the previous output file intact, causing Malamar to parse stale data and potentially duplicate messages or actions.
+Yes, switching to random nanoid for chat output files: `/tmp/malamar_chat_output_{random_nanoid}.json`. This prevents the dangerous scenario where a failed CLI run leaves the previous output file intact, causing Malamar to parse stale data and potentially duplicate messages or actions.
 
 Updated pattern:
 - Chat input: `/tmp/malamar_chat_{chat_id}.md` (reused per chat)
 - Chat output: `/tmp/malamar_chat_output_{random_nanoid}.json` (fresh each processing)
 
----
+## Question #17: Temp File Cleanup
 
-## Temp File Cleanup
+Should Malamar optionally clean up its own temp files, or is OS-dependent cleanup acceptable?
 
-Q: Should Malamar optionally clean up its own temp files, or is OS-dependent cleanup acceptable?
+### Answer
 
-A: OS-dependent `/tmp` cleanup is acceptable. Users needing control can use `MALAMAR_TEMP_DIR` to manage their own temp directory.
+OS-dependent `/tmp` cleanup is acceptable. Users needing control can use `MALAMAR_TEMP_DIR` to manage their own temp directory.
 
----
+## Question #18: Inactive Chat State
 
-## Inactive Chat State
+Should there be an explicit "inactive" state for chats, or visual dimming for old chats?
 
-Q: Should there be an explicit "inactive" state for chats, or visual dimming for old chats?
+### Answer
 
-A: No explicit inactive state needed. Chats use implicit ordering (recently active at top). Old chats naturally sink and users can delete when no longer needed.
+No explicit inactive state needed. Chats use implicit ordering (recently active at top). Old chats naturally sink and users can delete when no longer needed.
 
----
+## Question #19: CLI Settings Refresh Button
 
-## CLI Settings Refresh Button
+Should there be a manual "Refresh CLI Status" button for immediate re-detection after installing a new CLI?
 
-Q: Should there be a manual "Refresh CLI Status" button for immediate re-detection after installing a new CLI?
+### Answer
 
-A: Yes, adding a "Refresh CLI Status" button on the CLI Settings page. This is low friction and gives users immediate feedback after installing new CLIs, while the 5-minute periodic check continues handling background changes.
+Yes, add a "Refresh CLI Status" button on the CLI Settings page. This is low friction and gives users immediate feedback after installing new CLIs, while the 5-minute periodic check continues handling background changes.
 
----
+## Question #20: Delete Workspace Action
 
-## Delete Workspace Action
+Should the Malamar agent have a `delete_workspace` action?
 
-Q: Should the Malamar agent have a `delete_workspace` action?
+### Answer
 
-A: No, intentionally excluded. Workspace deletion is highly destructive (cascades everything - agents, tasks, comments, chats) and requires explicit human confirmation (typing workspace name). Giving agents the ability to delete workspaces would be catastrophic if hallucinated. The Malamar agent can create, modify, and organize, but destruction of top-level resources remains human-only.
+No, intentionally excluded. Workspace deletion is highly destructive (cascades everything - agents, tasks, comments, chats) and requires explicit human confirmation (typing workspace name). Giving agents the ability to delete workspaces would be catastrophic if hallucinated. The Malamar agent can create, modify, and organize, but destruction of top-level resources remains human-only.
 
----
+## Question #21: Task Routing From Chat-Created Tasks
 
-## Task Routing From Chat-Created Tasks
+When a workspace agent creates a task via chat, should that task skip to the creating agent or start from the first agent?
 
-Q: When a workspace agent creates a task via chat, should that task skip to the creating agent or start from the first agent?
+### Answer
 
-A: No special routing. All tasks follow the same loop starting from the first agent, regardless of origin (UI, Malamar agent action, or workspace agent action). Context goes in the description.
+No special routing. All tasks follow the same loop starting from the first agent, regardless of origin (UI, Malamar agent action, or workspace agent action). Context goes in the description.
