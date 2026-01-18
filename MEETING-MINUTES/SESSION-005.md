@@ -135,7 +135,7 @@ What action buttons should be available for each status?
 - "Cancel" action (kills current loop)
 - "Move to In Review" action
 - "Prioritize" action
-- NO "Delete" action
+- ~~NO "Delete" action~~ → **Note:** Revised in SESSION-009 Q#32 - Delete IS now available for In Progress tasks (kills subprocess first, then cascade delete)
 
 **In Review:**
 - "Move to Todo" action
@@ -151,11 +151,13 @@ Is "Cancel" the same as "Kill Loop"?
 
 ### Answer
 
-Yes. Two use cases:
-1. Un-hang the agent/CLI when something went wrong
-2. Make time to rethink
+> **Note:** This behavior was revised in SESSION-009 Q#26. The updated behavior is: Cancel kills the subprocess, moves task to "In Review", and adds a system comment "Task cancelled by user". User must comment to move it back to processing.
 
-The Cancel action kills the current loop but does NOT automatically change the status. The task stays in "In Progress" and the user decides what to do next.
+~~Yes. Two use cases:~~
+~~1. Un-hang the agent/CLI when something went wrong~~
+~~2. Make time to rethink~~
+
+~~The Cancel action kills the current loop but does NOT automatically change the status. The task stays in "In Progress" and the user decides what to do next.~~
 
 ## Question #15: Post-Cancel Behavior
 
@@ -163,7 +165,9 @@ After "Cancel", will the runner automatically pick up the task again?
 
 ### Answer
 
-Yes, intended to be re-picked up right away following runner rules. If user doesn't want it picked up anymore, they manually move it to "In Review".
+> **Note:** This behavior was revised in SESSION-009 Q#26. The updated behavior is: Task moves to "In Review" after cancel, so it will NOT be automatically re-picked up. User investigates, then comments to move back to Todo → In Progress.
+
+~~Yes, intended to be re-picked up right away following runner rules. If user doesn't want it picked up anymore, they manually move it to "In Review".~~
 
 ## Question #16: Queue Pickup Status Filter
 

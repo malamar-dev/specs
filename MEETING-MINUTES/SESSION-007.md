@@ -93,9 +93,11 @@ What action types are available for chat agents?
 
 ### Answer
 
+> **Note:** This was revised in SESSION-009 Q#34-35. The `create_task` action has been **removed entirely**. Tasks must be created explicitly via UI, not through chat. Additionally, `rename_chat` is only available on the **first agent response**, not on every message.
+
 **All chat agents (workspace agents + Malamar):**
-- `rename_chat` - set the chat title
-- `create_task` - create a new task in the workspace
+- `rename_chat` - set the chat title *(first response only)*
+- ~~`create_task` - create a new task in the workspace~~ → **Removed**
 
 **Malamar agent only:**
 - `create_agent` - create a new agent in the workspace
@@ -216,6 +218,8 @@ How are chats titled?
 
 The agent can rename the chat via the `rename_chat` action. This is available to all chat agents (workspace agents + Malamar), allowing the agent to give the conversation a meaningful title based on context.
 
+> **Note:** Refined in SESSION-009 Q#39 - `rename_chat` is only available on the **first agent response**. After that, only users can rename via UI.
+
 ## Question #15: Chat UI Navigation
 
 Looking at the workspace detail page, you mentioned there will be a "Chat" tab alongside "Tasks" and "Agents". When the user clicks on the Chat tab, what do they see? A list of previous chats, a way to start a new chat, or does it immediately open a new conversation?
@@ -305,7 +309,9 @@ When an agent uses the `create_task` action from chat, the task gets created in 
 
 ### Answer
 
-Toast notification with a clickable link to open the newly created task. This requires a new SSE event type: `task.created` with the actor being the user. No side-effects.
+> **Note:** The `create_task` action was **removed** in SESSION-009 Q#34-35. Tasks must be created explicitly via UI. The `task.created` SSE event may still be useful for UI-created tasks, but the chat-triggered scenario described below no longer applies.
+
+~~Toast notification with a clickable link to open the newly created task. This requires a new SSE event type: `task.created` with the actor being the user. No side-effects.~~
 
 ## Question #26: Renaming Chat via UI
 
@@ -321,7 +327,9 @@ The context file at `/tmp/malamar_chat_{chat_id}_context.md` was mentioned for t
 
 ### Answer
 
-Yes, the context file should be available to **all chat agents** (not just Malamar), since any agent can use `create_task` and may benefit from workspace context. The context file includes agent IDs alongside names, e.g., "Planner (id: 123456abcdef)".
+Yes, the context file should be available to **all chat agents** (not just Malamar), ~~since any agent can use `create_task` and~~ may benefit from workspace context. The context file includes agent IDs alongside names, e.g., "Planner (id: 123456abcdef)".
+
+> **Note:** `create_task` was removed in SESSION-009 Q#34-35, but the context file is still useful for all agents.
 
 ## Question #28: Chat Message Ordering
 
@@ -468,8 +476,10 @@ What are the schemas for the remaining actions?
 
 ### Answer
 
-- `rename_chat`: `{ "type": "rename_chat", "title": "..." }`
-- `create_task`: `{ "type": "create_task", "summary": "...", "description": "..." }`
+> **Note:** `create_task` was **removed** in SESSION-009 Q#34-35.
+
+- `rename_chat`: `{ "type": "rename_chat", "title": "..." }` *(first response only - see SESSION-009 Q#39)*
+- ~~`create_task`: `{ "type": "create_task", "summary": "...", "description": "..." }`~~ → **Removed**
 - `update_workspace`: `{ "type": "update_workspace", "title?": "...", "description?": "...", "working_directory_mode?": "static|temp", "working_directory_path?": "...", ... }` (allows updating all workspace settings including cleanup and notification settings)
 
 ## Question #45: Malamar Agent CLI Selection
@@ -478,7 +488,9 @@ What CLI does the Malamar agent use?
 
 ### Answer
 
-1. Malamar agent always uses, in order, the first available CLI: Claude Code → Gemini CLI → Codex CLI → OpenCode.
+> **Note:** The CLI priority order was revised in SESSION-009 Q#37. The correct order is: Claude Code → **Codex CLI** → **Gemini CLI** → OpenCode (Codex and Gemini are swapped).
+
+1. Malamar agent always uses, in order, the first available CLI: ~~Claude Code → Gemini CLI → Codex CLI → OpenCode~~ → **Claude Code → Codex CLI → Gemini CLI → OpenCode**.
 2. In the chat popup, next to the agent selector, there is also a CLI selector to override which CLI handles the chat:
    - When changing the agent, automatically update the CLI corresponding to that agent's configured CLI.
    - When manually changing the CLI, save it to the chat as an override.
@@ -501,7 +513,7 @@ chats
 ```
 
 **Behavior:**
-1. **Malamar agent** (agent_id is NULL): Uses first available CLI in order: Claude Code → Gemini CLI → Codex CLI → OpenCode
+1. **Malamar agent** (agent_id is NULL): Uses first available CLI in order: Claude Code → Codex CLI → Gemini CLI → OpenCode *(order revised in SESSION-009 Q#37)*
 2. **Workspace agents**: Uses the CLI configured on the agent
 3. **CLI override** (cli_type is not NULL): Overrides both of the above, uses the specified CLI regardless of agent configuration
 

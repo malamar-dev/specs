@@ -29,7 +29,9 @@ This document covers the technical implementation details for Malamar. For produ
 
 **Frontend:**
 - TypeScript with React (via create-vite-app)
+- shadcn/ui component library with Tailwind CSS
 - Bun as the build tool/runtime
+- Mobile-first responsive design
 
 **Distribution:**
 - Single executable binary, or run via `bunx`/`npx`
@@ -610,9 +612,6 @@ data: {"task_id": "xxx", "task_summary": "...", "author_name": "Planner", "works
 event: task.error_occurred
 data: {"task_id": "xxx", "task_summary": "...", "error_message": "CLI exited with code 1", "workspace_id": "yyy"}
 
-event: task.created
-data: {"task_id": "xxx", "task_summary": "...", "workspace_id": "yyy"}
-
 event: agent.execution_started
 data: {"task_id": "xxx", "task_summary": "...", "agent_name": "Implementer", "workspace_id": "yyy"}
 
@@ -630,8 +629,6 @@ data: {"chat_id": "xxx", "chat_title": "...", "agent_name": "Malamar", "workspac
 ```
 
 Backend uses in-process pub/sub event emitter to fan out to connected clients.
-
-**Task Created via Chat:** The `task.created` event is emitted when an agent uses the `create_task` action from chat. The UI shows a toast with a clickable link to the new task.
 
 **Broadcasting Scope:** SSE events are broadcast to all connected clients without workspace scoping. Client-side filtering handles noise if needed. Workspace-scoped broadcasting will be revisited when adding multi-user authentication.
 
@@ -662,6 +659,125 @@ Tasks are displayed in a Kanban board with four columns: Todo, In Progress, In R
 - Task detail view polls every 3 seconds
 - Uses React Query (or similar) for caching and deduplication
 - SSE events trigger toast notifications for important events
+
+### Theme Support
+
+- Default: Follow system preference (`prefers-color-scheme`)
+- Toggle: Theme switcher in global settings or header
+- Preference stored in localStorage
+- Uses shadcn/ui's built-in dark mode support
+
+### Search Functionality
+
+Basic text search is available on:
+- **Workspace list**: Search by workspace title
+- **Chat list**: Search by chat title
+
+No search on the task Kanban board (columns already filter by status).
+
+### Empty States
+
+Each empty list displays a contextual message with a call-to-action:
+
+| Empty State | Display |
+|-------------|---------|
+| Workspace list | "No workspaces yet" + "Create Workspace" button |
+| Tasks (whole board) | "No tasks yet" + "Create Task" button |
+| Tasks (single column) | Empty column, no message |
+| Chats | "No conversations yet" + "Start a chat" dropdown |
+| Agents | Warning banner + prompt to chat with Malamar agent |
+
+### Form Validation
+
+**Required fields:**
+- Workspace title
+- Agent name (must be unique within workspace)
+- Agent instruction
+- Task summary
+- Comment content (non-empty)
+- Chat message (non-empty)
+
+**Optional fields:**
+- Workspace instruction
+- Task description
+- Directory path (static mode) - show warning if path doesn't exist but allow saving
+
+**No max lengths** - UI truncates long text in lists/cards with ellipsis, shows full text in detail views.
+
+### Delete Confirmations
+
+| Action | Confirmation Pattern |
+|--------|---------------------|
+| Delete Workspace | Type workspace name to confirm |
+| Delete All Done Tasks | Type workspace name to confirm |
+| Delete Individual Task | Simple confirm dialog |
+| Delete Individual Agent | Simple confirm dialog |
+| Delete Individual Chat | Simple confirm dialog |
+
+### Task Kanban Cards
+
+Each task card displays:
+- Task summary (truncated with ellipsis if long)
+- Time since last update (e.g., "5 min ago", "2 days ago")
+- Comment count badge (if > 0)
+- Priority badge (if prioritized)
+- Processing indicator (pulsing border or spinner when agent is working)
+
+### Task Prioritization UI
+
+- **Button location**: Task detail view, alongside other action buttons
+- **Visual indicator**: Priority badge/icon on Kanban card
+- **Toggle behavior**: Button shows "Prioritize" or "Remove Priority" based on current state
+
+### Agent Ordering UI
+
+- **New agents**: Append to end (highest order + 1)
+- **Display**: Agents listed with position numbers (1, 2, 3, 4)
+- **Reorder**: Drag-and-drop on desktop, up/down arrows on mobile
+- **Save**: Changes save immediately on drop
+
+### Default CLI for New Agents
+
+Pre-select the first healthy CLI in priority order:
+1. Claude Code
+2. Codex CLI
+3. Gemini CLI
+4. OpenCode
+
+If none healthy, pre-select Claude Code (user sees unhealthy indicator).
+
+### Toast Notifications
+
+- **Duration**: 5 seconds auto-dismiss
+- **Stacking**: Max 3 visible, older dismissed when new arrive
+- **Position**: Bottom-right
+- **Interaction**: Clickable (navigates to relevant item), X button to dismiss
+- **Types**: Success (green), Error (red), Info (neutral)
+
+### Date/Time Formatting
+
+| Age | Format |
+|-----|--------|
+| < 1 hour | "5 min ago", "just now" |
+| < 24 hours | "3 hours ago" |
+| < 7 days | "2 days ago" |
+| ≥ 7 days (current year) | "Jan 15" |
+| ≥ 7 days (past year) | "Jan 15, 2025" |
+
+- Hover tooltip shows full absolute timestamp
+- Uses browser locale for formatting
+- Times displayed in user's local timezone
+
+### CLI Health Warnings
+
+When CLIs are unhealthy, display warnings:
+
+| Scenario | Warning |
+|----------|---------|
+| Zero CLIs healthy | Persistent warning in header: "No CLIs available - configure in settings" |
+| Agent's CLI unhealthy | Warning banner on workspace page |
+| Chat with no healthy CLI | Error in chat UI preventing send: "No CLI available" |
+| CLI dropdown | Visual indicator (red dot) for unhealthy CLIs |
 
 ### Single Executable Distribution
 
@@ -759,8 +875,6 @@ Log formats: `text`, `json`
 | `malamar help` | Show help/usage |
 | `malamar doctor` | Check system health (CLIs, database, config) |
 | `malamar config` | Show current configuration |
-| `malamar export` | Export data (details TBD) |
-| `malamar import` | Import data (details TBD) |
 
 ### First Startup
 
