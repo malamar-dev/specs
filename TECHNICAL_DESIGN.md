@@ -13,6 +13,8 @@ This document covers the technical implementation details for Malamar. For produ
 - [Background Jobs](#background-jobs)
 - [Configuration Reference](#configuration-reference)
 - [Operations](#operations)
+- [Testing](#testing)
+- [Development Tooling](#development-tooling)
 
 ---
 
@@ -29,8 +31,15 @@ This document covers the technical implementation details for Malamar. For produ
 - SQLite database with WAL mode
 
 **Frontend:**
-- TypeScript with React (via create-vite-app)
+- TypeScript with React (via Vite)
+- React Query for server-state management
+- Zustand for client-only state (when needed)
+- React Hook Form with Zod resolver for forms
 - shadcn/ui component library with Tailwind CSS
+- Lucide React for icons
+- @dnd-kit for drag-and-drop (agent reordering)
+- react-markdown with remark-gfm and rehype-highlight for markdown rendering
+- next-themes for theme switching
 - Bun as the build tool/runtime
 - Mobile-first responsive design
 
@@ -898,8 +907,9 @@ Tasks are displayed in a Kanban board with four columns: Todo, In Progress, In R
 
 ### Real-Time Updates
 
-- Task detail view polls every 3 seconds
-- Uses React Query (or similar) for caching and deduplication
+- React Query with conservative caching (30s stale time) since SSE pushes updates
+- SSE events trigger `queryClient.invalidateQueries()` for affected resources
+- Refetch on window focus for returning users
 - SSE events trigger toast notifications for important events
 
 ### Theme Support
@@ -908,6 +918,31 @@ Tasks are displayed in a Kanban board with four columns: Todo, In Progress, In R
 - Toggle: Theme switcher in global settings or header
 - Preference stored in localStorage
 - Uses shadcn/ui's built-in dark mode support
+
+### Accessibility
+
+shadcn/ui components are built on Radix primitives, which handle ARIA attributes, focus management, and keyboard navigation. The codebase follows baseline practices:
+
+- Semantic HTML elements (`button`, `nav`, `main`, `h1-h6`)
+- Skip-to-content link in the root layout
+- Form error messages associated via `aria-describedby`
+- Color contrast meets WCAG AA (via shadcn/ui theme)
+
+### Optimistic Updates
+
+Some actions update the UI immediately before server confirmation for better perceived responsiveness:
+
+**Optimistic (instant UI feedback):**
+- Adding a comment to a task
+- Sending a chat message
+- Toggling task priority
+- Theme switching
+
+**Wait for server (show loading state):**
+- Creating/deleting workspaces, tasks, agents, or chats
+- Status changes (triggers backend logic)
+- Agent reordering
+- Form submissions with validation
 
 ### Search Functionality
 
@@ -1255,3 +1290,37 @@ Malamar is purely an orchestration layer. It has no opinions on what agents do -
 - Any task achievable via AI CLIs
 
 Malamar only cares about the agent response format so the runner can understand the outcome.
+
+---
+
+## Testing
+
+### Test Types
+
+| Type | Location | What it Tests | Server Running? |
+|------|----------|---------------|-----------------|
+| **Unit** | `src/**/*.test.ts` | Individual functions, mocked dependencies | No |
+| **Integration** | `tests/` | Service layers with real database | No |
+| **E2E** | `e2e/` | HTTP requests against running server | Yes |
+
+Unit tests are co-located with source files for discoverability. Integration and E2E tests have separate directories.
+
+### Test Isolation
+
+E2E tests use environment variables for isolation:
+- `MALAMAR_DATA_DIR=/tmp/malamar-test` - Isolated data directory
+- `MALAMAR_PORT=3457` - Non-default port
+
+Each E2E test file manages its own server lifecycle (start before tests, stop after). Tests clean up before and after to ensure a clean slate.
+
+---
+
+## Development Tooling
+
+| Tool | Purpose |
+|------|---------|
+| **Bun** | Runtime, package manager, test runner, bundler |
+| **TypeScript** | Type safety (run directly via Bun on backend) |
+| **Prettier** | Code formatting |
+| **ESLint** | Linting with `eslint-plugin-simple-import-sort` for import organization |
+| **husky + lint-staged** | Pre-commit hooks to run ESLint and Prettier on staged files |
