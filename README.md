@@ -25,6 +25,7 @@ Some meeting minute sessions are too detailed or task-specific to be reflected i
 | Session | Focus | When to Read |
 |---------|-------|--------------|
 | [SESSION-012](./MEETING-MINUTES/SESSION-012.md) | Backend repository structure | When setting up the backend codebase, understanding folder organization, module patterns, testing strategy, or development tooling |
+| [SESSION-013](./MEETING-MINUTES/SESSION-013.md) | Frontend repository structure | When setting up the frontend codebase, understanding folder organization, component patterns, data fetching, state management, or styling conventions |
 
 ## Writing Tips
 
